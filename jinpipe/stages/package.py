@@ -60,6 +60,8 @@ def slice_segment_audio(
         f"{end_s:.3f}",
         "-i",
         str(source_wav),
+        "-f",
+        audio_format,
         str(tmp_path),
     ]
     result = runner(args)
