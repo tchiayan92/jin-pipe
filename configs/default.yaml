@@ -1,0 +1,78 @@
+# JinPipe default configuration.
+# Copy this file, edit sources/paths, and pass --config to `jinpipe run`.
+
+sources:
+  channels:
+    - "https://www.youtube.com/@example/videos"
+  video_urls: []
+
+paths:
+  work_dir: "./work"
+  output_dir: "./output"
+  db_path: "./work/jinpipe.sqlite3"
+
+discover:
+  max_concurrency: 3
+  request_delay_s: 5.0
+
+download:
+  max_concurrency: 5
+  audio_format: "m4a"
+  rate_limit: null
+  timeout_s: 900
+
+standardize:
+  sample_rate: 16000
+  workers: 4
+
+vad:
+  threshold: 0.5
+  min_silence_duration_ms: 400
+  min_speech_duration_ms: 250
+  speech_pad_ms: 100
+  max_superchunk_s: 90.0
+  overlap_s: 2.5
+  workers: 4
+
+asr:
+  model_size: "large-v3"
+  device: "auto"          # auto | cuda | cpu
+  compute_type: "auto"     # auto resolves to float16 (cuda) / int8 (cpu)
+  num_workers: 1            # persistent model-loaded worker processes (<= GPU count, or 1 for CPU-only)
+  language: null             # null = auto-detect per video
+  align: true                 # wav2vec2 forced alignment for precise word timestamps
+  diarize: false               # enable only for genuinely multi-speaker sources (heavy)
+  hf_token: null                 # required if diarize is true (pyannote gated model)
+
+rechunk:
+  min_segment_s: 2.0
+  max_segment_s: 20.0
+  boundary_edge_guard_s: 1.5
+  silence_fallback_ms: 250
+
+filter:
+  enabled: true
+  min_dnsmos_ovr: 2.5
+  min_duration_s: null
+  allowed_languages: null
+  dnsmos_model_path: null    # required if min_dnsmos_ovr is set; see jinpipe/stages/filter.py
+  workers: 4
+
+package:
+  audio_format: "flac"
+
+resources:
+  ram_floor_mb: 1536
+  vram_floor_mb: 1024
+  ram_budget_mb: null      # null = derive from total system RAM minus floor
+  vram_budget_mb: null      # null = derive from total per-GPU VRAM minus floor
+  poll_interval_s: 1.0
+  cost_per_audio_second:
+    standardize: 2000000
+    vad: 3000000
+    asr: 60000000
+    diarize: 80000000
+    filter: 1000000
+
+queues:
+  maxsize_per_stage: 32
