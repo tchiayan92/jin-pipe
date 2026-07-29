@@ -37,6 +37,11 @@ filter = [
 gpu = [
     "pynvml>=11.5",
 ]
+# `jinpipe view` - Gradio app for browsing packaged chunk audio.
+viewer = [
+    "gradio>=6.0,<7.0",
+    "gradio_annotated_audio @ git+https://github.com/Scicom-AI-Enterprise-Organization/gradio-annotated-audio.git#subdirectory=annotatedaudio",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

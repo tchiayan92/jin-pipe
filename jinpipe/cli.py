@@ -181,5 +181,22 @@ def filter_speakers_cmd(
     console.print(f"[green]OK[/green] removed {result['removed']} segment(s); manifest now has {count} entries")
 
 
+@app.command("view")
+def view(
+    config: Path = ConfigOpt,
+    host: str = typer.Option("127.0.0.1", "--host", help="Interface to bind the Gradio server to"),
+    port: int = typer.Option(7860, "--port", help="Port to bind the Gradio server to"),
+    share: bool = typer.Option(False, "--share", help="Create a public Gradio share link"),
+) -> None:
+    r"""Launch a Gradio app to browse packaged chunk audio with transcript/speaker/overlap annotations.
+
+    Requires the `viewer` extra: pip install "jinpipe\[viewer]"
+    """
+    from jinpipe.viewer import launch_viewer
+
+    cfg = load_config(config)
+    launch_viewer(cfg.paths.output_dir, server_name=host, server_port=port, share=share)
+
+
 if __name__ == "__main__":
     app()
