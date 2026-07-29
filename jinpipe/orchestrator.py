@@ -36,6 +36,7 @@ from jinpipe.stages import standardize as standardize_stage
 from jinpipe.stages import vad as vad_stage
 from jinpipe.stages.discover import DiscoverError, DiscoveredVideo, discover_sources
 from jinpipe.stages.download import DownloadError, download_all
+from jinpipe.stages.local import local_results, pending_and_fresh_local_files
 from jinpipe.stages.rechunk import Segment, SuperchunkWords, Word, rechunk_video
 from jinpipe.workers.asr_worker import AsrWorkerPool, build_worker_specs, make_task
 
@@ -95,9 +96,19 @@ async def run_pipeline_async(cfg: JinPipeConfig, *, gpu_ids: list[int] | None = 
         task.add_done_callback(background_tasks.discard)
 
     try:
-        video_stream = _pending_and_fresh_videos(store, cfg)
+        if cfg.sources.local_dir is not None:
+            if cfg.sources.channels or cfg.sources.video_urls:
+                logger.warning(
+                    "sources.local_dir is set - ignoring sources.channels (%d) and sources.video_urls (%d); "
+                    "no YouTube discovery or download will happen this run",
+                    len(cfg.sources.channels),
+                    len(cfg.sources.video_urls),
+                )
+            download_stream = local_results(pending_and_fresh_local_files(store, cfg.sources.local_dir))
+        else:
+            download_stream = download_all(_pending_and_fresh_videos(store, cfg), raw_dir, cfg.download)
 
-        async for result in download_all(video_stream, raw_dir, cfg.download):
+        async for result in download_stream:
             if isinstance(result, DownloadError):
                 store.update_video(result.video_id, status="FAILED", error=result.error)
                 continue

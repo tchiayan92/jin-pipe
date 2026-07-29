@@ -24,6 +24,10 @@ discover (yt-dlp) -> download (yt-dlp) -> standardize (ffmpeg)
   -> package (flac + JSON + manifest)
 ```
 
+The discover/download steps are YouTube-specific and can be swapped out
+entirely for a local folder of existing audio files - see
+[Choosing a source](#choosing-a-source-youtube-vs-a-local-folder) below.
+
 A single asyncio event loop is the only scheduler and the only SQLite writer
 (`jinpipe/db.py`). Worker processes - a `ProcessPoolExecutor` for stateless
 CPU stages and a small fixed pool of persistent model-loaded processes for
@@ -79,6 +83,47 @@ pip install -e ".[vad,asr,filter,gpu]"  # add these on the box that actually run
 
 Copy `configs/default.yaml`, edit `sources`/`paths`, and tune the per-stage
 worker counts and `resources.*` floors/budgets for your box.
+
+### Choosing a source: YouTube vs. a local folder
+
+`sources` supports two mutually exclusive modes. Which one runs is decided
+by a single field: **is `sources.local_dir` set or not.**
+
+**YouTube mode** (the default) - discover via `channels` and/or list specific
+videos in `video_urls`, then download each with `yt-dlp`:
+
+```yaml
+sources:
+  channels:
+    - "https://www.youtube.com/@example/videos"
+  video_urls:
+    - "https://www.youtube.com/watch?v=xxxxxxxxxxx"
+  local_dir: null   # must stay null/omitted for YouTube mode to run
+```
+
+**Local-folder mode** - skip YouTube discovery/download entirely and process
+audio files already on disk (e.g. a 1-hour interview recording):
+
+```yaml
+sources:
+  channels: []        # ignored - fine to leave populated too, see note below
+  video_urls: []       # ignored - fine to leave populated too, see note below
+  local_dir: "./local_audio"   # every audio file directly inside this folder is processed
+```
+
+You do **not** need to empty `channels`/`video_urls` for local-folder mode to
+work - the orchestrator checks `local_dir` first, and if it's set, YouTube
+discovery/download never runs regardless of what's in `channels`/`video_urls`
+(it logs a warning at startup if it finds both populated, just so it's
+obvious which mode actually ran). Conversely, leave `local_dir: null`
+(the default) to get ordinary YouTube mode.
+
+`local_dir` is scanned non-recursively for `.mp3`, `.wav`, `.m4a`, `.flac`,
+`.ogg`, `.opus`, `.aac`, `.mp4`, and `.webm` files
+(`jinpipe/stages/local.py`); each file is fed straight into standardization
+under a `video_id` derived from its filename, so file names should be unique
+within the folder. Everything downstream (VAD, ASR/diarization, rechunk,
+filter, package, resume) behaves identically to YouTube mode from there on.
 
 ```bash
 jinpipe check-config --config my-config.yaml

@@ -5,6 +5,10 @@ sources:
   channels:
     - "https://www.youtube.com/@example/videos"
   video_urls: []
+  local_dir: null  # set to a folder path to process audio files directly from disk instead of
+                     # discovering/downloading from YouTube - channels/video_urls are ignored when set.
+                     # e.g. local_dir: "./local_audio" picks up every .mp3/.wav/.m4a/.flac/.ogg/.opus/
+                     # .aac/.mp4/.webm file directly inside that folder (non-recursive).
 
 paths:
   work_dir: "./work"

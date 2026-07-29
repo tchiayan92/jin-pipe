@@ -11,6 +11,10 @@ from pydantic import BaseModel, Field
 class SourcesConfig(BaseModel):
     channels: list[str] = Field(default_factory=list)
     video_urls: list[str] = Field(default_factory=list)
+    # When set, the pipeline processes every audio file directly inside this
+    # folder instead of discovering/downloading from YouTube - channels and
+    # video_urls are ignored for the run.
+    local_dir: Path | None = None
 
 
 class PathsConfig(BaseModel):
