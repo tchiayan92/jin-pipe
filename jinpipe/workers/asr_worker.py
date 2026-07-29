@@ -120,6 +120,32 @@ def build_worker_specs(cfg: AsrConfig, gpu_ids: list[int] | None) -> list[dict]:
     return [{"worker_id": f"gpu-{gid}", "device": "cuda", "gpu_id": gid} for gid in ids]
 
 
+def _hf_auth_kwarg(ctor) -> str:
+    """Name of the HF-auth-token keyword arg a DiarizationPipeline constructor accepts.
+
+    pyannote.audio (and whisperx's thin wrapper around it) renamed
+    use_auth_token -> token following huggingface_hub's own deprecation of
+    use_auth_token, so which spelling is valid depends on whichever
+    pyannote.audio/whisperx version happens to be installed. Inspecting the
+    live signature avoids hardcoding either spelling.
+    """
+    import inspect
+
+    params = inspect.signature(ctor).parameters
+    return "token" if "token" in params else "use_auth_token"
+
+
+def _build_diarize_pipeline(hf_token: str | None, device: str):
+    # Import from the whisperx.diarize submodule rather than the top-level
+    # package: whether DiarizationPipeline is re-exported from
+    # whisperx/__init__.py has changed across whisperx releases, but the
+    # submodule itself has stayed put.
+    from whisperx.diarize import DiarizationPipeline
+
+    auth_kwarg = _hf_auth_kwarg(DiarizationPipeline.__init__)
+    return DiarizationPipeline(device=device, **{auth_kwarg: hf_token})
+
+
 def _default_model_loader(cfg: AsrConfig, device: str, gpu_id: int | None) -> WorkerModels:
     import os
 
@@ -131,13 +157,7 @@ def _default_model_loader(cfg: AsrConfig, device: str, gpu_id: int | None) -> Wo
     model = whisperx.load_model(cfg.model_size, device, compute_type=compute_type, language=cfg.language)
     diarize_pipeline = None
     if cfg.diarize:
-        # Import from the whisperx.diarize submodule rather than the top-level
-        # package: whether DiarizationPipeline is re-exported from
-        # whisperx/__init__.py has changed across whisperx releases, but the
-        # submodule itself has stayed put.
-        from whisperx.diarize import DiarizationPipeline
-
-        diarize_pipeline = DiarizationPipeline(use_auth_token=cfg.hf_token, device=device)
+        diarize_pipeline = _build_diarize_pipeline(cfg.hf_token, device)
     return WorkerModels(whisper_model=model, device=device, diarize_pipeline=diarize_pipeline)
 
 

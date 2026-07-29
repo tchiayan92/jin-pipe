@@ -18,7 +18,13 @@ from pathlib import Path
 import pytest
 
 from jinpipe.config import AsrConfig
-from jinpipe.workers.asr_worker import AsrWorkerPool, compute_overlap_regions, make_task, word_in_overlap
+from jinpipe.workers.asr_worker import (
+    AsrWorkerPool,
+    _hf_auth_kwarg,
+    compute_overlap_regions,
+    make_task,
+    word_in_overlap,
+)
 
 
 class _FakeModels:
@@ -102,6 +108,26 @@ def test_word_in_overlap_checks_intersection_with_regions():
     assert word_in_overlap(3.0, 4.5, regions) is True
     assert word_in_overlap(0.0, 2.0, regions) is False
     assert word_in_overlap(4.0, 6.0, []) is False
+
+
+# ---------------------------------------------------------------------------
+# _hf_auth_kwarg: picks the right HF-token kwarg across pyannote/whisperx
+# versions that renamed use_auth_token -> token.
+# ---------------------------------------------------------------------------
+
+
+def test_hf_auth_kwarg_prefers_token_when_present():
+    def ctor(self, token=None, device="cpu"):
+        pass
+
+    assert _hf_auth_kwarg(ctor) == "token"
+
+
+def test_hf_auth_kwarg_falls_back_to_use_auth_token():
+    def ctor(self, use_auth_token=None, device="cpu"):
+        pass
+
+    assert _hf_auth_kwarg(ctor) == "use_auth_token"
 
 
 async def test_pool_processes_task_end_to_end(tmp_path):
