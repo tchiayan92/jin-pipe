@@ -32,7 +32,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 
 def _default_runner(args: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(args, capture_output=True)
+    return subprocess.run(args, capture_output=True, stdin=subprocess.DEVNULL)
 
 
 def slice_segment_audio(

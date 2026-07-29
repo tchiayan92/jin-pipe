@@ -15,7 +15,7 @@ RunnerT = Callable[[list[str]], subprocess.CompletedProcess]
 
 
 def _default_runner(args: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(args, capture_output=True)
+    return subprocess.run(args, capture_output=True, stdin=subprocess.DEVNULL)
 
 
 def standardize_audio(

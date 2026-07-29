@@ -149,15 +149,58 @@ def _build_diarize_pipeline(hf_token: str | None, device: str):
 def _default_model_loader(cfg: AsrConfig, device: str, gpu_id: int | None) -> WorkerModels:
     import os
 
+    # pyannote.audio (pulled in transitively by whisperx) still calls
+    # hf_hub_download(..., use_auth_token=...), a kwarg newer huggingface_hub
+    # releases dropped in favor of `token`. pyannote's modules do
+    # `from huggingface_hub import hf_hub_download` at their own import
+    # time, so this must be patched before whisperx is first imported here -
+    # patching huggingface_hub.hf_hub_download afterward would miss the
+    # local references pyannote already bound.
+    import huggingface_hub
+
+    _orig_hf_hub_download = huggingface_hub.hf_hub_download
+
+    def _hf_hub_download_compat(*args, **kwargs):
+        if "use_auth_token" in kwargs:
+            kwargs["token"] = kwargs.pop("use_auth_token")
+        return _orig_hf_hub_download(*args, **kwargs)
+
+    huggingface_hub.hf_hub_download = _hf_hub_download_compat
+
     import whisperx
 
     if gpu_id is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     compute_type = resolve_compute_type(cfg, device)
-    model = whisperx.load_model(cfg.model_size, device, compute_type=compute_type, language=cfg.language)
-    diarize_pipeline = None
-    if cfg.diarize:
-        diarize_pipeline = _build_diarize_pipeline(cfg.hf_token, device)
+    # whisperx's bundled pyannote VAD loader calls torch.load() on a
+    # trusted HF checkpoint without accounting for PyTorch >=2.6's switch
+    # to weights_only=True by default, which rejects the omegaconf config
+    # objects baked into that checkpoint. Force weights_only=False for the
+    # duration of model loading rather than allowlisting individual globals,
+    # since the set of rejected globals isn't stable across releases.
+    import torch
+
+    _orig_torch_load = torch.load
+
+    def _weights_only_false_load(*args, **kwargs):
+        # Force-overwrite rather than setdefault: lightning_fabric's loader
+        # passes weights_only=True explicitly (to match torch's new
+        # default), so a mere setdefault never gets a chance to apply.
+        kwargs["weights_only"] = False
+        return _orig_torch_load(*args, **kwargs)
+
+    torch.load = _weights_only_false_load
+    try:
+        model = whisperx.load_model(cfg.model_size, device, compute_type=compute_type, language=cfg.language)
+        diarize_pipeline = None
+        if cfg.diarize:
+            # Diarization's segmentation sub-model hits the same
+            # weights_only issue as the VAD checkpoint above (tripping on a
+            # different disallowed global, e.g. torch.torch_version.TorchVersion),
+            # so it also needs to run under the patched torch.load.
+            diarize_pipeline = _build_diarize_pipeline(cfg.hf_token, device)
+    finally:
+        torch.load = _orig_torch_load
     return WorkerModels(whisper_model=model, device=device, diarize_pipeline=diarize_pipeline)
 
 
