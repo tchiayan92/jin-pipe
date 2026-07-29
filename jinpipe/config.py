@@ -81,6 +81,12 @@ class FilterConfig(BaseModel):
 
 class PackageConfig(BaseModel):
     audio_format: str = "flac"
+    # None = keep the source's native sample rate / channel count (no forced
+    # resampling or downmixing) - set an explicit value only to shrink output
+    # files at the cost of quality. Independent of standardize.sample_rate,
+    # which only controls the internal 16kHz-mono copy VAD/ASR need.
+    sample_rate: int | None = None
+    channels: int | None = None
 
 
 class ResourceConfig(BaseModel):

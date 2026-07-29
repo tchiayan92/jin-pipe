@@ -12,6 +12,9 @@ with two hard guarantees Emilia-Pipe doesn't make:
   boundary between two sentences (see [Sentence-safe rechunking](#sentence-safe-rechunking)).
 - **CPU/GPU memory use is actively bounded**, not just implicitly limited by
   concurrency counts (see [Memory / OOM control](#memory--oom-control)).
+- **Packaged output audio is not downsampled by the pipeline itself** - the
+  16kHz-mono copy VAD/ASR need is kept internal-only (see
+  [Output audio quality](#output-audio-quality)).
 
 ## Pipeline
 
@@ -47,6 +50,21 @@ punctuation - falling back to the longest inter-word silence gap for
 punctuation-less languages. A single sentence longer than `max_segment_s` is
 kept whole and tagged `exceeds_max_duration: true` rather than ever being cut
 mid-sentence.
+
+### Output audio quality
+
+VAD (Silero) and ASR (WhisperX/Whisper) both require 16kHz mono input, so
+`standardize.sample_rate` (default `16000`) controls a separate, *internal*
+working copy of each video used only for VAD/ASR/diarization. Packaged output
+segments are sliced straight from the original source file instead - not from
+that internal copy - so by default they keep the source's native sample rate
+and channel count untouched: a 48kHz stereo source produces 48kHz stereo
+`.flac` segments, capped only by whatever quality the source (or, for
+YouTube, yt-dlp's `download.audio_format`) already had.
+
+Set `package.sample_rate`/`package.channels` explicitly (e.g. `22050`/`1`)
+only if you want smaller files and are fine trading quality for it - leave
+both `null` (the default) to preserve source quality.
 
 ### Memory / OOM control
 

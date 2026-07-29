@@ -36,6 +36,39 @@ def test_slice_segment_audio_builds_expected_args_and_atomic_rename(tmp_path):
     assert not (tmp_path / "seg.flac.tmp").exists()
 
 
+def test_slice_segment_audio_defaults_to_native_passthrough_no_resample_args(tmp_path):
+    out_path = tmp_path / "seg.flac"
+    captured = {}
+
+    def fake_runner(args):
+        captured["args"] = args
+        (tmp_path / "seg.flac.tmp").write_bytes(b"FLAC-DATA")
+        return subprocess.CompletedProcess(args, returncode=0, stdout=b"", stderr=b"")
+
+    slice_segment_audio(tmp_path / "source.wav", out_path, 1.0, 2.5, "flac", runner=fake_runner)
+
+    assert "-ar" not in captured["args"]
+    assert "-ac" not in captured["args"]
+
+
+def test_slice_segment_audio_passes_explicit_sample_rate_and_channels(tmp_path):
+    out_path = tmp_path / "seg.flac"
+    captured = {}
+
+    def fake_runner(args):
+        captured["args"] = args
+        (tmp_path / "seg.flac.tmp").write_bytes(b"FLAC-DATA")
+        return subprocess.CompletedProcess(args, returncode=0, stdout=b"", stderr=b"")
+
+    slice_segment_audio(
+        tmp_path / "source.wav", out_path, 1.0, 2.5, "flac", sample_rate=22050, channels=1, runner=fake_runner
+    )
+
+    args = captured["args"]
+    assert args[args.index("-ar") + 1] == "22050"
+    assert args[args.index("-ac") + 1] == "1"
+
+
 def test_slice_segment_audio_raises_on_ffmpeg_failure(tmp_path):
     def failing_runner(args):
         return subprocess.CompletedProcess(args, returncode=1, stdout=b"", stderr=b"boom")
@@ -58,7 +91,7 @@ def test_package_segment_writes_json_and_skips_reslice_if_audio_exists(tmp_path)
 
     calls = []
 
-    def fake_slice_fn(source, out_path, start, end, audio_format):
+    def fake_slice_fn(source, out_path, start, end, audio_format, sample_rate=None, channels=None):
         calls.append(out_path)
         out_path.write_bytes(b"fake-audio")
 
@@ -86,7 +119,7 @@ def test_build_and_write_manifest_reflects_disk_state(tmp_path):
     output_dir.mkdir()
     cfg = PackageConfig(audio_format="flac")
 
-    def fake_slice_fn(source, out_path, start, end, audio_format):
+    def fake_slice_fn(source, out_path, start, end, audio_format, sample_rate=None, channels=None):
         out_path.write_bytes(b"fake-audio")
 
     for i in range(3):

@@ -73,6 +73,9 @@ filter:
 
 package:
   audio_format: "flac"
+  sample_rate: null  # null = keep the source's native sample rate (no downsampling of final output);
+                       # set e.g. 44100/22050 to force a resample and shrink files instead
+  channels: null       # null = keep the source's native channel count; set 1 to force mono
 
 resources:
   ram_floor_mb: 1536

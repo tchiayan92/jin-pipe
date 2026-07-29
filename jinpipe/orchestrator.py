@@ -296,14 +296,26 @@ async def _finalize_segment(
     seg_id = package_stage.segment_id_for(video_id, seg.idx)
     store.update_segment(video_id, seg.idx, status="RUNNING")
     duration = seg.end - seg.start
-    std_path = Path(video["standardized_path"])
+    # Sliced from the original source, not the 16kHz-mono standardized copy
+    # VAD/ASR use internally - packaged output quality shouldn't be capped by
+    # whatever those models happen to require as input.
+    raw_path = Path(video["raw_path"])
     audio_path = cfg.paths.output_dir / f"{seg_id}.{cfg.package.audio_format}"
 
     reservation = await gate.acquire("filter", duration)
     try:
         await loop.run_in_executor(
             executor,
-            partial(package_stage.slice_segment_audio, std_path, audio_path, seg.start, seg.end, cfg.package.audio_format),
+            partial(
+                package_stage.slice_segment_audio,
+                raw_path,
+                audio_path,
+                seg.start,
+                seg.end,
+                cfg.package.audio_format,
+                sample_rate=cfg.package.sample_rate,
+                channels=cfg.package.channels,
+            ),
         )
         # NOTE: language isn't yet threaded from WhisperX's per-super-chunk
         # detection through to here, so filter.allowed_languages is inert
@@ -332,7 +344,7 @@ async def _finalize_segment(
             video_id,
             video["url"],
             seg,
-            std_path,
+            raw_path,
             cfg.paths.output_dir,
             cfg.package,
             dnsmos_ovr=filter_result.dnsmos_ovr,

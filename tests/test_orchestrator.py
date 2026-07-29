@@ -43,7 +43,7 @@ def _fake_coarse_segment(std_path, cfg, duration_s):
     return [(0, 0.0, 5.0), (1, 5.0, 10.0)]
 
 
-def _fake_slice_segment_audio(source, out_path, start, end, audio_format, runner=None):
+def _fake_slice_segment_audio(source, out_path, start, end, audio_format, sample_rate=None, channels=None, runner=None):
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_bytes(b"fake-audio")
     return out_path
@@ -72,6 +72,10 @@ async def test_process_video_to_superchunks_end_to_end(tmp_path, monkeypatch):
 
     store = JobStore(cfg.paths.db_path)
     store.add_video("vid1", "https://youtu.be/vid1", channel="chan")
+    # Mirrors what run_pipeline_async's outer download loop persists before
+    # spawning _process_video_to_superchunks - _finalize_segment reads this
+    # back to slice the final packaged audio from the original source.
+    store.update_video("vid1", raw_path=str(tmp_path / "raw.m4a"))
 
     gate = ResourceGate(cfg.resources, ram_available_fn=lambda: 10**12)
 

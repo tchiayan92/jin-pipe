@@ -42,12 +42,16 @@ def slice_segment_audio(
     end_s: float,
     audio_format: str,
     *,
+    sample_rate: int | None = None,
+    channels: int | None = None,
     runner=_default_runner,
 ) -> Path:
-    """Slice [start_s, end_s) out of the standardized WAV via ffmpeg seek.
+    """Slice [start_s, end_s) out of source_wav via ffmpeg seek.
 
     Never holds the whole video's audio in memory - ffmpeg streams the slice
-    directly from disk.
+    directly from disk. sample_rate/channels are left unset (native passthrough)
+    by default, so this preserves whatever quality the source already has -
+    pass them explicitly only to force a resample/downmix.
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
@@ -60,10 +64,12 @@ def slice_segment_audio(
         f"{end_s:.3f}",
         "-i",
         str(source_wav),
-        "-f",
-        audio_format,
-        str(tmp_path),
     ]
+    if sample_rate is not None:
+        args += ["-ar", str(sample_rate)]
+    if channels is not None:
+        args += ["-ac", str(channels)]
+    args += ["-f", audio_format, str(tmp_path)]
     result = runner(args)
     if result.returncode != 0:
         stderr = result.stderr.decode(errors="replace") if isinstance(result.stderr, bytes) else str(result.stderr)
@@ -96,7 +102,15 @@ def package_segment(
     json_path = output_dir / f"{seg_id}.json"
 
     if not audio_path.exists():
-        slice_fn(source_wav, audio_path, segment.start, segment.end, cfg.audio_format)
+        slice_fn(
+            source_wav,
+            audio_path,
+            segment.start,
+            segment.end,
+            cfg.audio_format,
+            sample_rate=cfg.sample_rate,
+            channels=cfg.channels,
+        )
 
     metadata = {
         "segment_id": seg_id,
