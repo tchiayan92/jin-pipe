@@ -181,6 +181,46 @@ def filter_speakers_cmd(
     console.print(f"[green]OK[/green] removed {result['removed']} segment(s); manifest now has {count} entries")
 
 
+@app.command("transcribe")
+def transcribe(
+    config: Path = ConfigOpt,
+    input_dir: Path = typer.Option(
+        ..., "--input-dir", "-i", help="Folder of already-chunked audio files to transcribe directly"
+    ),
+    output: Path = typer.Option(
+        None, "--output", "-o", help="CSV output path (default: <output_dir>/transcriptions.csv)"
+    ),
+    verbose: bool = VerboseOpt,
+) -> None:
+    """Transcribe a folder of pre-chunked audio files straight to a CSV - no VAD/rechunk/diarize/package.
+
+    Each file directly inside --input-dir is treated as a single utterance
+    already; this loads one Whisper model (from the config's `asr` section)
+    and writes a numbered (no, filename, text) row per file.
+    """
+    from jinpipe.orchestrator import detect_gpu_ids
+    from jinpipe.stages.transcribe_only import transcribe_folder, write_csv
+
+    _setup_logging(verbose)
+    cfg = load_config(config)
+
+    if not input_dir.is_dir():
+        console.print(f"[red]Error[/red] --input-dir is not a directory: {input_dir}")
+        raise typer.Exit(code=1)
+
+    device = cfg.asr.device
+    if device == "auto":
+        device = "cuda" if detect_gpu_ids() else "cpu"
+
+    output_path = output or (cfg.paths.output_dir / "transcriptions.csv")
+    rows = transcribe_folder(input_dir, cfg.asr, device=device)
+    if not rows:
+        console.print(f"[yellow]No audio files found directly inside {input_dir}[/yellow]")
+        return
+    write_csv(rows, output_path)
+    console.print(f"[green]OK[/green] transcribed {len(rows)} file(s) to {output_path}")
+
+
 @app.command("view")
 def view(
     config: Path = ConfigOpt,

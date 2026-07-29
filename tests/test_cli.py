@@ -204,3 +204,81 @@ def test_filter_speakers_nothing_to_remove_skips_confirmation(tmp_path):
 
     assert result.exit_code == 0
     assert "nothing to remove" in result.output
+
+
+def _fake_transcribe(model, path, cfg):
+    return f"transcript of {path.name}"
+
+
+def test_transcribe_writes_csv_from_input_dir(tmp_path, monkeypatch):
+    config_path = _write_config(tmp_path)
+    input_dir = tmp_path / "chunks"
+    input_dir.mkdir()
+    (input_dir / "a.wav").write_bytes(b"fake-audio")
+    (input_dir / "b.wav").write_bytes(b"fake-audio")
+
+    monkeypatch.setattr("jinpipe.orchestrator.detect_gpu_ids", lambda: [])
+    monkeypatch.setattr(
+        "jinpipe.stages.transcribe_only.transcribe_folder",
+        lambda input_dir, asr_cfg, device: [
+            {"no": i, "filename": p.name, "text": _fake_transcribe(None, p, asr_cfg)}
+            for i, p in enumerate(sorted(input_dir.iterdir()), start=1)
+        ],
+    )
+
+    result = runner.invoke(app, ["transcribe", "--config", str(config_path), "--input-dir", str(input_dir)])
+
+    assert result.exit_code == 0
+    assert "transcribed 2 file(s)" in result.output
+    output_path = tmp_path / "output" / "transcriptions.csv"
+    assert output_path.exists()
+    lines = output_path.read_text().strip().splitlines()
+    assert lines[0] == "no,filename,text"
+    assert lines[1] == "1,a.wav,transcript of a.wav"
+    assert lines[2] == "2,b.wav,transcript of b.wav"
+
+
+def test_transcribe_respects_custom_output_path(tmp_path, monkeypatch):
+    config_path = _write_config(tmp_path)
+    input_dir = tmp_path / "chunks"
+    input_dir.mkdir()
+    (input_dir / "a.wav").write_bytes(b"fake-audio")
+    custom_output = tmp_path / "custom.csv"
+
+    monkeypatch.setattr("jinpipe.orchestrator.detect_gpu_ids", lambda: [])
+    monkeypatch.setattr(
+        "jinpipe.stages.transcribe_only.transcribe_folder",
+        lambda input_dir, asr_cfg, device: [{"no": 1, "filename": "a.wav", "text": "hi"}],
+    )
+
+    result = runner.invoke(
+        app,
+        ["transcribe", "--config", str(config_path), "--input-dir", str(input_dir), "--output", str(custom_output)],
+    )
+
+    assert result.exit_code == 0
+    assert custom_output.exists()
+
+
+def test_transcribe_missing_input_dir_errors(tmp_path):
+    config_path = _write_config(tmp_path)
+
+    result = runner.invoke(app, ["transcribe", "--config", str(config_path), "--input-dir", str(tmp_path / "ghost")])
+
+    assert result.exit_code != 0
+    assert "not a directory" in result.output
+
+
+def test_transcribe_no_audio_files_warns_without_writing_csv(tmp_path, monkeypatch):
+    config_path = _write_config(tmp_path)
+    input_dir = tmp_path / "chunks"
+    input_dir.mkdir()
+
+    monkeypatch.setattr("jinpipe.orchestrator.detect_gpu_ids", lambda: [])
+    monkeypatch.setattr("jinpipe.stages.transcribe_only.transcribe_folder", lambda input_dir, asr_cfg, device: [])
+
+    result = runner.invoke(app, ["transcribe", "--config", str(config_path), "--input-dir", str(input_dir)])
+
+    assert result.exit_code == 0
+    assert "No audio files found" in result.output
+    assert not (tmp_path / "output" / "transcriptions.csv").exists()
