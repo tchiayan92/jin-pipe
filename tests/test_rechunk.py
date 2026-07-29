@@ -10,8 +10,8 @@ from jinpipe.stages.rechunk import (
 )
 
 
-def W(text, start, end, speaker=None):
-    return Word(text=text, start=start, end=end, speaker=speaker)
+def W(text, start, end, speaker=None, overlap=False):
+    return Word(text=text, start=start, end=end, speaker=speaker, overlap=overlap)
 
 
 # ---------------------------------------------------------------------------
@@ -174,11 +174,10 @@ def test_rechunk_video_keeps_overlong_sentence_whole_and_flags_it():
     assert segments[0].exceeds_max_duration is True
 
 
-def test_rechunk_video_assigns_majority_speaker():
+def test_rechunk_video_assigns_majority_speaker_within_one_speakers_words():
     words = [
         W("Hello.", 0, 0.5, speaker="A"),
         W("Yes.", 0.6, 1.0, speaker="A"),
-        W("Ok.", 1.1, 1.5, speaker="B"),
     ]
     chunk = SuperchunkWords(idx=0, start=0, end=2.0, words=words)
     cfg = RechunkConfig(min_segment_s=0.1, max_segment_s=10.0, silence_fallback_ms=250)
@@ -187,6 +186,69 @@ def test_rechunk_video_assigns_majority_speaker():
 
     assert len(segments) == 1
     assert segments[0].speaker == "A"
+
+
+def test_rechunk_video_splits_on_speaker_change_even_without_punctuation_or_silence():
+    # No punctuation, no silence gap between "yes" and "ok" - only the speaker
+    # change (A -> B) should force a boundary, so speaker A and B never end up
+    # sharing one output segment/clip.
+    words = [
+        W("hello", 0, 0.5, speaker="A"),
+        W("yes", 0.6, 1.0, speaker="A"),
+        W("ok", 1.05, 1.5, speaker="B"),
+        W("sure", 1.55, 2.0, speaker="B"),
+    ]
+    chunk = SuperchunkWords(idx=0, start=0, end=3.0, words=words)
+    cfg = RechunkConfig(min_segment_s=0.1, max_segment_s=10.0, silence_fallback_ms=250, split_on_speaker_change=True)
+
+    segments = rechunk_video([chunk], cfg)
+
+    assert len(segments) == 2
+    assert segments[0].text == "hello yes"
+    assert segments[0].speaker == "A"
+    assert segments[1].text == "ok sure"
+    assert segments[1].speaker == "B"
+
+
+def test_rechunk_video_split_on_speaker_change_disabled_preserves_majority_vote():
+    words = [
+        W("Hello.", 0, 0.5, speaker="A"),
+        W("Yes.", 0.6, 1.0, speaker="A"),
+        W("Ok.", 1.1, 1.5, speaker="B"),
+    ]
+    chunk = SuperchunkWords(idx=0, start=0, end=2.0, words=words)
+    cfg = RechunkConfig(
+        min_segment_s=0.1, max_segment_s=10.0, silence_fallback_ms=250, split_on_speaker_change=False
+    )
+
+    segments = rechunk_video([chunk], cfg)
+
+    assert len(segments) == 1
+    assert segments[0].speaker == "A"
+
+
+def test_rechunk_video_flags_segment_with_overlapping_speech():
+    words = [
+        W("Hello.", 0, 0.5, speaker="A", overlap=False),
+        W("world.", 0.6, 1.0, speaker="A", overlap=True),
+    ]
+    chunk = SuperchunkWords(idx=0, start=0, end=2.0, words=words)
+    cfg = RechunkConfig(min_segment_s=0.1, max_segment_s=10.0, silence_fallback_ms=250)
+
+    segments = rechunk_video([chunk], cfg)
+
+    assert len(segments) == 1
+    assert segments[0].has_overlap is True
+
+
+def test_rechunk_video_no_overlap_flag_when_no_words_overlap():
+    words = [W("Hello.", 0, 0.5, speaker="A"), W("world.", 0.6, 1.0, speaker="A")]
+    chunk = SuperchunkWords(idx=0, start=0, end=2.0, words=words)
+    cfg = RechunkConfig(min_segment_s=0.1, max_segment_s=10.0, silence_fallback_ms=250)
+
+    segments = rechunk_video([chunk], cfg)
+
+    assert segments[0].has_overlap is False
 
 
 # ---------------------------------------------------------------------------

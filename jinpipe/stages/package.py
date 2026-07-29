@@ -111,6 +111,7 @@ def package_segment(
         "language": language,
         "dnsmos_ovr": dnsmos_ovr,
         "exceeds_max_duration": segment.exceeds_max_duration,
+        "has_overlap": segment.has_overlap,
     }
     _atomic_write_text(json_path, json.dumps(metadata, ensure_ascii=False, indent=2))
     return PackagedSegment(segment_id=seg_id, audio_path=audio_path, json_path=json_path)

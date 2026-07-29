@@ -49,7 +49,7 @@ def _fake_slice_segment_audio(source, out_path, start, end, audio_format, runner
     return out_path
 
 
-def _fake_filter_segment(audio_path, duration_s, cfg, language=None, scorer=None):
+def _fake_filter_segment(audio_path, duration_s, cfg, language=None, has_overlap=False, scorer=None):
     return filter_stage.FilterResult(True, 3.5, 3.5, 4.0, None)
 
 

@@ -62,6 +62,7 @@ class RechunkConfig(BaseModel):
     max_segment_s: float = 20.0
     boundary_edge_guard_s: float = 1.5
     silence_fallback_ms: int = 250
+    split_on_speaker_change: bool = True
 
 
 class FilterConfig(BaseModel):
@@ -70,6 +71,7 @@ class FilterConfig(BaseModel):
     min_duration_s: float | None = None
     allowed_languages: list[str] | None = None
     dnsmos_model_path: str | None = None
+    reject_overlapping_speech: bool = True
     workers: int = 4
 
 

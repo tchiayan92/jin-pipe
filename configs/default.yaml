@@ -41,7 +41,10 @@ asr:
   num_workers: 1            # persistent model-loaded worker processes (<= GPU count, or 1 for CPU-only)
   language: null             # null = auto-detect per video
   align: true                 # wav2vec2 forced alignment for precise word timestamps
-  diarize: false               # enable only for genuinely multi-speaker sources (heavy)
+  diarize: false               # turn on for multi-speaker sources - required for rechunk.split_on_speaker_change
+                                 # and filter.reject_overlapping_speech to have any effect; without it every
+                                 # word has no speaker label so segments can silently mix speakers (heavy: adds
+                                 # a pyannote diarization pass per super-chunk)
   hf_token: null                 # required if diarize is true (pyannote gated model)
 
 rechunk:
@@ -49,6 +52,9 @@ rechunk:
   max_segment_s: 20.0
   boundary_edge_guard_s: 1.5
   silence_fallback_ms: 250
+  split_on_speaker_change: true  # force a segment boundary at every speaker turn instead of majority-voting
+                                   # one speaker label onto a segment that mixes multiple speakers' words
+                                   # (no-op unless asr.diarize is true)
 
 filter:
   enabled: true
@@ -56,6 +62,9 @@ filter:
   min_duration_s: null
   allowed_languages: null
   dnsmos_model_path: null    # required if min_dnsmos_ovr is set; see jinpipe/stages/filter.py
+  reject_overlapping_speech: true  # drop segments where pyannote's diarization turns show >=2 speakers
+                                     # talking at once, so simultaneous cross-talk never reaches output
+                                     # (no-op unless asr.diarize is true)
   workers: 4
 
 package:

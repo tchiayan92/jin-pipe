@@ -235,7 +235,13 @@ async def _rechunk_and_finalize(
             start=row["start_s"],
             end=row["end_s"],
             words=[
-                Word(text=w["word"], start=w["start"], end=w["end"], speaker=w.get("speaker"))
+                Word(
+                    text=w["word"],
+                    start=w["start"],
+                    end=w["end"],
+                    speaker=w.get("speaker"),
+                    overlap=w.get("overlap", False),
+                )
                 for w in json.loads(row["words_json"] or "[]")
             ],
         )
@@ -292,7 +298,10 @@ async def _finalize_segment(
         # detection through to here, so filter.allowed_languages is inert
         # until that's wired up.
         filter_result = await loop.run_in_executor(
-            executor, partial(filter_stage.filter_segment, audio_path, duration, cfg.filter, language=None)
+            executor,
+            partial(
+                filter_stage.filter_segment, audio_path, duration, cfg.filter, language=None, has_overlap=seg.has_overlap
+            ),
         )
     except Exception as exc:  # noqa: BLE001 - reported to the job store, never fatal to the run
         store.update_segment(video_id, seg.idx, status="FAILED", error=str(exc))

@@ -67,6 +67,42 @@ class WorkerModels:
         return self.align_models[language_code]
 
 
+def compute_overlap_regions(turns: list[dict]) -> list[tuple[float, float]]:
+    """Merged time ranges where >=2 distinct speakers' diarization turns intersect.
+
+    pyannote's diarization output is turn-level (one row per speaker per
+    contiguous stretch of speech) and, unlike whisperx's word-level
+    ``assign_word_speakers`` (which collapses each word to a single nearest
+    speaker and so throws this signal away), those turns can genuinely
+    overlap in time when two speakers talk at once. A sweep line over the
+    turn boundaries finds every sub-interval with >=2 simultaneously active
+    speakers and merges adjacent ones.
+    """
+    if len(turns) < 2:
+        return []
+    points = sorted({t["start"] for t in turns} | {t["end"] for t in turns})
+    regions: list[tuple[float, float]] = []
+    region_start = None
+    for a, b in zip(points, points[1:]):
+        if b <= a:
+            continue
+        mid = (a + b) / 2
+        active_speakers = {t["speaker"] for t in turns if t["start"] <= mid < t["end"]}
+        if len(active_speakers) >= 2:
+            if region_start is None:
+                region_start = a
+        elif region_start is not None:
+            regions.append((region_start, a))
+            region_start = None
+    if region_start is not None:
+        regions.append((region_start, points[-1]))
+    return regions
+
+
+def word_in_overlap(start: float, end: float, regions: list[tuple[float, float]]) -> bool:
+    return any(min(end, r_end) - max(start, r_start) > 0 for r_start, r_end in regions)
+
+
 def resolve_compute_type(cfg: AsrConfig, device: str) -> str:
     if cfg.compute_type != "auto":
         return cfg.compute_type
@@ -113,8 +149,11 @@ def _default_transcribe(models: WorkerModels, audio_path: str, cfg: AsrConfig) -
             result["segments"], align_model, metadata, audio, models.device, return_char_alignments=False
         )
 
+    overlap_regions: list[tuple[float, float]] = []
     if models.diarize_pipeline is not None:
         diarize_segments = models.diarize_pipeline(audio)
+        turns = diarize_segments[["start", "end", "speaker"]].to_dict("records")
+        overlap_regions = compute_overlap_regions(turns)
         result = whisperx.assign_word_speakers(diarize_segments, result)
 
     words = []
@@ -129,6 +168,7 @@ def _default_transcribe(models: WorkerModels, audio_path: str, cfg: AsrConfig) -
                     "start": w["start"],
                     "end": w["end"],
                     "speaker": w.get("speaker"),
+                    "overlap": word_in_overlap(w["start"], w["end"], overlap_regions),
                 }
             )
     return words

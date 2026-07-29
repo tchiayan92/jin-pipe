@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from jinpipe.config import AsrConfig
-from jinpipe.workers.asr_worker import AsrWorkerPool, make_task
+from jinpipe.workers.asr_worker import AsrWorkerPool, compute_overlap_regions, make_task, word_in_overlap
 
 
 class _FakeModels:
@@ -57,6 +57,51 @@ def fake_transcribe_stall_once(models, audio_path, cfg):
         marker.touch()
         time.sleep(5)  # simulate a hang; the supervisor should kill us well before this returns
     return [{"word": "ok", "start": 0.0, "end": 0.5, "speaker": None}]
+
+
+# ---------------------------------------------------------------------------
+# compute_overlap_regions / word_in_overlap: pure logic over raw diarization
+# turns, exercised without pandas/pyannote installed.
+# ---------------------------------------------------------------------------
+
+
+def test_compute_overlap_regions_no_turns_or_single_turn_has_no_overlap():
+    assert compute_overlap_regions([]) == []
+    assert compute_overlap_regions([{"start": 0.0, "end": 5.0, "speaker": "A"}]) == []
+
+
+def test_compute_overlap_regions_sequential_turns_have_no_overlap():
+    turns = [
+        {"start": 0.0, "end": 5.0, "speaker": "A"},
+        {"start": 5.0, "end": 10.0, "speaker": "B"},
+    ]
+    assert compute_overlap_regions(turns) == []
+
+
+def test_compute_overlap_regions_detects_simultaneous_speakers():
+    # B starts talking at 4.0, well before A finishes at 6.0: [4.0, 6.0) is cross-talk.
+    turns = [
+        {"start": 0.0, "end": 6.0, "speaker": "A"},
+        {"start": 4.0, "end": 9.0, "speaker": "B"},
+    ]
+    regions = compute_overlap_regions(turns)
+    assert len(regions) == 1
+    assert regions[0] == pytest.approx((4.0, 6.0))
+
+
+def test_compute_overlap_regions_ignores_same_speaker_double_counted_turn():
+    turns = [
+        {"start": 0.0, "end": 6.0, "speaker": "A"},
+        {"start": 4.0, "end": 9.0, "speaker": "A"},
+    ]
+    assert compute_overlap_regions(turns) == []
+
+
+def test_word_in_overlap_checks_intersection_with_regions():
+    regions = [(4.0, 6.0)]
+    assert word_in_overlap(3.0, 4.5, regions) is True
+    assert word_in_overlap(0.0, 2.0, regions) is False
+    assert word_in_overlap(4.0, 6.0, []) is False
 
 
 async def test_pool_processes_task_end_to_end(tmp_path):

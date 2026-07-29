@@ -77,10 +77,14 @@ def filter_segment(
     cfg: FilterConfig,
     *,
     language: str | None = None,
+    has_overlap: bool = False,
     scorer: ScorerFnT = _default_dnsmos_scorer,
 ) -> FilterResult:
     if not cfg.enabled:
         return FilterResult(True, None, None, None, None)
+
+    if cfg.reject_overlapping_speech and has_overlap:
+        return FilterResult(False, None, None, None, "overlapping multi-speaker speech detected")
 
     if cfg.min_duration_s is not None and duration_s < cfg.min_duration_s:
         return FilterResult(False, None, None, None, f"duration {duration_s:.2f}s below min_duration_s")
