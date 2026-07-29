@@ -131,5 +131,55 @@ def manifest(config: Path = ConfigOpt) -> None:
     console.print(f"[green]OK[/green] wrote {count} entries to {manifest_path}")
 
 
+@app.command("stats")
+def stats(config: Path = ConfigOpt) -> None:
+    """Show dataset stats for output_dir: speaker count, total speech hours, per-speaker breakdown."""
+    from jinpipe.stages.package import dataset_stats, print_dataset_stats
+
+    cfg = load_config(config)
+    result = dataset_stats(cfg.paths.output_dir)
+    if result["num_segments"] == 0:
+        console.print(f"No packaged segments found in {cfg.paths.output_dir}")
+        return
+    print_dataset_stats(console, result)
+
+
+@app.command("filter-speakers")
+def filter_speakers_cmd(
+    config: Path = ConfigOpt,
+    keep: list[str] = typer.Option(
+        ..., "--keep", help="Speaker label to retain; repeat for multiple. All other speakers are deleted."
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be removed without deleting anything"),
+) -> None:
+    """Delete packaged segments (audio+json) whose speaker isn't in --keep, then rebuild manifest.jsonl.
+
+    Only touches output_dir - never the job store - so a video's tracked
+    status is unaffected; re-run `package`/`run` to regenerate anything
+    deleted here.
+    """
+    from jinpipe.stages.package import filter_speakers, write_manifest
+
+    cfg = load_config(config)
+    keep_set = set(keep)
+    preview = filter_speakers(cfg.paths.output_dir, keep_set, dry_run=True)
+    console.print(f"Speakers to keep: {sorted(keep_set)}")
+    console.print(f"{preview['kept']} segment(s) kept, {preview['removed']} segment(s) would be removed")
+    if preview["removed"] == 0:
+        console.print("[green]OK[/green] nothing to remove")
+        return
+    if dry_run:
+        return
+
+    if not yes:
+        typer.confirm("Continue?", abort=True)
+
+    result = filter_speakers(cfg.paths.output_dir, keep_set, dry_run=False)
+    manifest_path = cfg.paths.output_dir / "manifest.jsonl"
+    count = write_manifest(cfg.paths.output_dir, manifest_path)
+    console.print(f"[green]OK[/green] removed {result['removed']} segment(s); manifest now has {count} entries")
+
+
 if __name__ == "__main__":
     app()

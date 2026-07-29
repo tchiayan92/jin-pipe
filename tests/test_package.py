@@ -6,6 +6,8 @@ import pytest
 from jinpipe.config import PackageConfig
 from jinpipe.stages.package import (
     build_manifest,
+    dataset_stats,
+    filter_speakers,
     package_segment,
     segment_id_for,
     slice_segment_audio,
@@ -77,9 +79,9 @@ def test_slice_segment_audio_raises_on_ffmpeg_failure(tmp_path):
         slice_segment_audio(tmp_path / "source.wav", tmp_path / "seg.flac", 0.0, 1.0, "flac", runner=failing_runner)
 
 
-def make_segment(idx=0, start=0.0, end=2.0, text="Hello world."):
+def make_segment(idx=0, start=0.0, end=2.0, text="Hello world.", speaker="A"):
     words = [Word(text="Hello", start=start, end=start + 0.5), Word(text="world.", start=start + 0.5, end=end)]
-    return Segment(idx=idx, start=start, end=end, text=text, words=words, speaker="A", exceeds_max_duration=False)
+    return Segment(idx=idx, start=start, end=end, text=text, words=words, speaker=speaker, exceeds_max_duration=False)
 
 
 def test_package_segment_writes_json_and_skips_reslice_if_audio_exists(tmp_path):
@@ -142,3 +144,86 @@ def test_build_and_write_manifest_reflects_disk_state(tmp_path):
     package_segment("vid1", "https://youtu.be/vid1", seg3, tmp_path / "source.wav", output_dir, cfg, slice_fn=fake_slice_fn)
     count2 = write_manifest(output_dir, manifest_path)
     assert count2 == 4
+
+
+def _pack(output_dir, cfg, video_id, idx, start, end, speaker):
+    def fake_slice_fn(source, out_path, start, end, audio_format, sample_rate=None, channels=None):
+        out_path.write_bytes(b"fake-audio")
+
+    seg = make_segment(idx=idx, start=start, end=end, speaker=speaker)
+    return package_segment(video_id, f"https://youtu.be/{video_id}", seg, output_dir / "source.wav", output_dir, cfg, slice_fn=fake_slice_fn)
+
+
+def test_dataset_stats_aggregates_per_speaker_and_totals(tmp_path):
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    cfg = PackageConfig(audio_format="flac")
+
+    _pack(output_dir, cfg, "vid1", 0, 0.0, 2.0, "A")
+    _pack(output_dir, cfg, "vid1", 1, 2.0, 5.0, "B")
+    _pack(output_dir, cfg, "vid2", 0, 0.0, 4.0, "A")
+
+    stats = dataset_stats(output_dir)
+    assert stats["num_segments"] == 3
+    assert stats["num_videos"] == 2
+    assert stats["num_speakers"] == 2
+    assert stats["total_duration_s"] == pytest.approx(9.0)
+    assert stats["per_speaker"]["A"] == {"segments": 2, "duration_s": pytest.approx(6.0)}
+    assert stats["per_speaker"]["B"] == {"segments": 1, "duration_s": pytest.approx(3.0)}
+
+
+def test_dataset_stats_on_empty_output_dir(tmp_path):
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+
+    stats = dataset_stats(output_dir)
+    assert stats["num_segments"] == 0
+    assert stats["num_videos"] == 0
+    assert stats["num_speakers"] == 0
+    assert stats["total_duration_s"] == 0.0
+    assert stats["per_speaker"] == {}
+
+
+def test_filter_speakers_dry_run_leaves_files_untouched(tmp_path):
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    cfg = PackageConfig(audio_format="flac")
+
+    _pack(output_dir, cfg, "vid1", 0, 0.0, 2.0, "A")
+    _pack(output_dir, cfg, "vid1", 1, 2.0, 5.0, "B")
+
+    result = filter_speakers(output_dir, {"A"}, dry_run=True)
+    assert result == {"kept": 1, "removed": 1}
+    assert len(list(output_dir.glob("*.json"))) == 2
+    assert len(list(output_dir.glob("*.flac"))) == 2
+
+
+def test_filter_speakers_deletes_audio_and_json_for_excluded_speakers(tmp_path):
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    cfg = PackageConfig(audio_format="flac")
+
+    _pack(output_dir, cfg, "vid1", 0, 0.0, 2.0, "A")
+    _pack(output_dir, cfg, "vid1", 1, 2.0, 5.0, "B")
+    _pack(output_dir, cfg, "vid2", 0, 0.0, 4.0, "A")
+
+    result = filter_speakers(output_dir, {"A"}, dry_run=False)
+    assert result == {"kept": 2, "removed": 1}
+
+    remaining = build_manifest(output_dir)
+    assert sorted(e["segment_id"] for e in remaining) == ["vid1_00000", "vid2_00000"]
+    assert not (output_dir / "vid1_00001.json").exists()
+    assert not (output_dir / "vid1_00001.flac").exists()
+
+
+def test_filter_speakers_keeps_everything_when_no_speaker_excluded(tmp_path):
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    cfg = PackageConfig(audio_format="flac")
+
+    _pack(output_dir, cfg, "vid1", 0, 0.0, 2.0, "A")
+    _pack(output_dir, cfg, "vid1", 1, 2.0, 5.0, "B")
+
+    result = filter_speakers(output_dir, {"A", "B"}, dry_run=False)
+    assert result == {"kept": 2, "removed": 0}
+    assert len(list(output_dir.glob("*.json"))) == 2

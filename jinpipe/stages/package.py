@@ -146,3 +146,69 @@ def write_manifest(output_dir: Path, manifest_path: Path) -> int:
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write_text(manifest_path, "\n".join(lines) + ("\n" if lines else ""))
     return len(entries)
+
+
+UNKNOWN_SPEAKER = "UNKNOWN"
+
+
+def dataset_stats(output_dir: Path) -> dict:
+    """Aggregate speaker/duration stats from the per-segment JSON files on disk."""
+    entries = build_manifest(output_dir)
+    videos: set[str] = set()
+    per_speaker: dict[str, dict[str, float]] = {}
+    total_duration_s = 0.0
+    for entry in entries:
+        duration = entry.get("duration") or 0.0
+        total_duration_s += duration
+        videos.add(entry.get("video_id"))
+        speaker = entry.get("speaker") or UNKNOWN_SPEAKER
+        stat = per_speaker.setdefault(speaker, {"segments": 0, "duration_s": 0.0})
+        stat["segments"] += 1
+        stat["duration_s"] += duration
+    return {
+        "num_segments": len(entries),
+        "num_videos": len(videos),
+        "num_speakers": len(per_speaker),
+        "total_duration_s": total_duration_s,
+        "per_speaker": per_speaker,
+    }
+
+
+def print_dataset_stats(console, stats: dict) -> None:
+    from rich.table import Table
+
+    console.print(
+        f"{stats['num_segments']} segment(s) across {stats['num_videos']} video(s), "
+        f"{stats['num_speakers']} speaker(s), {stats['total_duration_s'] / 3600:.2f} total speech hour(s)"
+    )
+    table = Table(title="Speaker breakdown")
+    table.add_column("speaker")
+    table.add_column("segments", justify="right")
+    table.add_column("hours", justify="right")
+    for speaker, stat in sorted(stats["per_speaker"].items(), key=lambda kv: kv[1]["duration_s"], reverse=True):
+        table.add_row(speaker, str(stat["segments"]), f"{stat['duration_s'] / 3600:.2f}")
+    console.print(table)
+
+
+def filter_speakers(output_dir: Path, keep: set[str], *, dry_run: bool = False) -> dict[str, int]:
+    """Delete packaged segments (audio + JSON) whose speaker is not in `keep`.
+
+    Ground truth for a dataset is the per-segment JSON/audio pairs on disk, not
+    manifest.jsonl, so this only touches those files - callers must rebuild the
+    manifest afterwards (e.g. via write_manifest) to reflect the new state.
+    """
+    kept = 0
+    removed = 0
+    for json_path in sorted(output_dir.glob("*.json")):
+        with json_path.open("r", encoding="utf-8") as f:
+            entry = json.load(f)
+        speaker = entry.get("speaker") or UNKNOWN_SPEAKER
+        if speaker in keep:
+            kept += 1
+            continue
+        removed += 1
+        if not dry_run:
+            seg_id = entry["segment_id"]
+            for path in output_dir.glob(f"{seg_id}.*"):
+                path.unlink()
+    return {"kept": kept, "removed": removed}
