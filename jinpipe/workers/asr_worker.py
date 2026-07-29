@@ -131,7 +131,13 @@ def _default_model_loader(cfg: AsrConfig, device: str, gpu_id: int | None) -> Wo
     model = whisperx.load_model(cfg.model_size, device, compute_type=compute_type, language=cfg.language)
     diarize_pipeline = None
     if cfg.diarize:
-        diarize_pipeline = whisperx.DiarizationPipeline(use_auth_token=cfg.hf_token, device=device)
+        # Import from the whisperx.diarize submodule rather than the top-level
+        # package: whether DiarizationPipeline is re-exported from
+        # whisperx/__init__.py has changed across whisperx releases, but the
+        # submodule itself has stayed put.
+        from whisperx.diarize import DiarizationPipeline
+
+        diarize_pipeline = DiarizationPipeline(use_auth_token=cfg.hf_token, device=device)
     return WorkerModels(whisper_model=model, device=device, diarize_pipeline=diarize_pipeline)
 
 
@@ -151,10 +157,12 @@ def _default_transcribe(models: WorkerModels, audio_path: str, cfg: AsrConfig) -
 
     overlap_regions: list[tuple[float, float]] = []
     if models.diarize_pipeline is not None:
+        from whisperx.diarize import assign_word_speakers
+
         diarize_segments = models.diarize_pipeline(audio)
         turns = diarize_segments[["start", "end", "speaker"]].to_dict("records")
         overlap_regions = compute_overlap_regions(turns)
-        result = whisperx.assign_word_speakers(diarize_segments, result)
+        result = assign_word_speakers(diarize_segments, result)
 
     words = []
     for seg in result["segments"]:
