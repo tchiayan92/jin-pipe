@@ -84,6 +84,47 @@ def test_recover_stale_running_respects_max_age(store):
     assert store.get_video("v1")["status"] == "RUNNING"
 
 
+def test_reset_video_deletes_only_that_videos_state(store):
+    store.add_video("v1", "https://youtu.be/v1")
+    store.update_video("v1", status="DONE")
+    store.add_superchunk("v1", 0, 0.0, 10.0)
+    store.add_segment("v1", 0, "v1_00000", 0.0, 5.0)
+    store.add_video("v2", "https://youtu.be/v2")
+    store.update_video("v2", status="DONE")
+
+    counts = store.reset_video("v1")
+
+    assert counts == {"segments": 1, "superchunks": 1, "videos": 1}
+    assert store.get_video("v1") is None
+    assert store.get_superchunks("v1") == []
+    assert store.get_segments("v1") == []
+    assert store.get_video("v2") is not None
+
+
+def test_reset_video_no_matching_rows_returns_zero_counts(store):
+    counts = store.reset_video("ghost")
+    assert counts == {"segments": 0, "superchunks": 0, "videos": 0}
+
+
+def test_reset_all_deletes_every_video(store):
+    store.add_video("v1", "https://youtu.be/v1")
+    store.add_superchunk("v1", 0, 0.0, 10.0)
+    store.add_segment("v1", 0, "v1_00000", 0.0, 5.0)
+    store.add_video("v2", "https://youtu.be/v2")
+    store.add_segment("v2", 0, "v2_00000", 0.0, 5.0)
+
+    counts = store.reset_all()
+
+    assert counts == {"segments": 2, "superchunks": 1, "videos": 2}
+    assert store.list_videos() == []
+    assert store.list_superchunks() == []
+    assert store.list_segments() == []
+
+
+def test_reset_all_on_empty_store_returns_zero_counts(store):
+    assert store.reset_all() == {"segments": 0, "superchunks": 0, "videos": 0}
+
+
 def test_status_counts(store):
     store.add_video("v1", "https://youtu.be/v1")
     store.add_video("v2", "https://youtu.be/v2")

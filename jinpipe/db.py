@@ -258,6 +258,33 @@ class JobStore:
         self._conn.commit()
         return total
 
+    # ---- reset ----
+
+    def reset_video(self, video_id: str) -> dict[str, int]:
+        """Delete all tracked state for one video (segments/superchunks before
+        the video row, to satisfy the foreign-key references). Never touches
+        anything on disk under paths.work_dir/output_dir - only what the job
+        store believes is already done, so a later run reprocesses this video
+        from scratch instead of skipping it as DONE."""
+        counts: dict[str, int] = {}
+        for table in ("segments", "superchunks", "videos"):
+            cur = self._conn.execute(f"DELETE FROM {table} WHERE video_id = ?", (video_id,))
+            counts[table] = cur.rowcount
+        self._conn.commit()
+        return counts
+
+    def reset_all(self) -> dict[str, int]:
+        """Delete every tracked video/superchunk/segment - a full job-store wipe.
+
+        Never touches anything on disk under paths.work_dir/output_dir - only
+        resets what the pipeline believes is already done."""
+        counts: dict[str, int] = {}
+        for table in ("segments", "superchunks", "videos"):
+            cur = self._conn.execute(f"DELETE FROM {table}")
+            counts[table] = cur.rowcount
+        self._conn.commit()
+        return counts
+
     # ---- status reporting ----
 
     def status_counts(self) -> dict[str, dict[str, int]]:

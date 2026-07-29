@@ -154,11 +154,26 @@ jinpipe run --config my-config.yaml -v
 jinpipe status --config my-config.yaml     # progress counts per stage/status
 jinpipe resume --config my-config.yaml -v  # after a crash/interrupt
 jinpipe manifest --config my-config.yaml   # rebuild manifest.jsonl from output_dir
+jinpipe reset --config my-config.yaml      # clear job-store tracking state (see below)
 ```
 
 Everything is resumable: the SQLite job store (`paths.db_path`) tracks each
 video/super-chunk/segment's status, so `resume` picks up wherever a prior run
 left off without re-downloading or re-transcribing completed work.
+
+This cuts both ways: the job store and `output_dir`/`work_dir` are two
+independent sources of truth that `jinpipe` assumes stay in sync. If you
+manually delete files from `output_dir` (or `work_dir`) without also clearing
+the corresponding job-store rows, `run`/`resume` will still see those videos
+as `DONE` and silently skip them - nothing will be reprocessed even though
+the output is gone. `jinpipe reset` clears job-store rows (never touches
+files on disk) so the next run starts those videos over:
+
+```bash
+jinpipe reset --config my-config.yaml                     # everything, with a confirmation prompt
+jinpipe reset --config my-config.yaml --video-id abc123   # just one video
+jinpipe reset --config my-config.yaml --yes               # skip the prompt (scripting)
+```
 
 ## What's tested where
 

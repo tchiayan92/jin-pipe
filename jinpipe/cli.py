@@ -68,6 +68,58 @@ def resume(config: Path = ConfigOpt, verbose: bool = VerboseOpt) -> None:
     run_pipeline(cfg)
 
 
+@app.command("reset")
+def reset(
+    config: Path = ConfigOpt,
+    video_id: str = typer.Option(
+        None, "--video-id", help="Reset only this video's tracked state (default: reset everything)"
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt"),
+) -> None:
+    """Clear job-store tracking state so the next run reprocesses from scratch.
+
+    Only resets what the pipeline believes is already done (the SQLite job
+    store at paths.db_path) - it never deletes anything under paths.work_dir
+    or paths.output_dir. Use this after manually clearing output_dir, so
+    videos the job store still thinks are DONE aren't silently skipped.
+    """
+    from jinpipe.db import JobStore
+
+    cfg = load_config(config)
+    store = JobStore(cfg.paths.db_path)
+    try:
+        if video_id is not None:
+            video = store.get_video(video_id)
+            if video is None:
+                console.print(f"[yellow]No tracked state found for video_id {video_id!r} - nothing to reset[/yellow]")
+                return
+            n_superchunks = len(store.get_superchunks(video_id))
+            n_segments = len(store.get_segments(video_id))
+            console.print(
+                f"This will delete tracked state for video [bold]{video_id}[/bold]: "
+                f"1 video, {n_superchunks} superchunk(s), {n_segments} segment(s) from {cfg.paths.db_path}"
+            )
+        else:
+            videos = store.list_videos()
+            if not videos:
+                console.print("Job store is already empty - nothing to reset")
+                return
+            console.print(
+                f"This will delete ALL tracked state: {len(videos)} video(s), "
+                f"{len(store.list_superchunks())} superchunk(s), {len(store.list_segments())} segment(s) "
+                f"from {cfg.paths.db_path}"
+            )
+        console.print("[dim]This does not delete any files under paths.work_dir or paths.output_dir.[/dim]")
+
+        if not yes:
+            typer.confirm("Continue?", abort=True)
+
+        counts = store.reset_video(video_id) if video_id is not None else store.reset_all()
+        console.print(f"[green]OK[/green] reset: {counts}")
+    finally:
+        store.close()
+
+
 @app.command("manifest")
 def manifest(config: Path = ConfigOpt) -> None:
     """Rebuild manifest.jsonl in output_dir from the per-segment JSON files on disk."""
