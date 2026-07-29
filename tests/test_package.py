@@ -116,6 +116,31 @@ def test_package_segment_writes_json_and_skips_reslice_if_audio_exists(tmp_path)
     assert len(calls) == 1
 
 
+def test_package_segment_word_clip_timestamps_are_relative_to_the_sliced_audio(tmp_path):
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    cfg = PackageConfig(audio_format="flac")
+    # Segment starts partway through the video, so clip-relative timestamps
+    # must differ from the video-relative start/end already on each word.
+    segment = make_segment(start=100.0, end=102.0)
+
+    def fake_slice_fn(source, out_path, start, end, audio_format, sample_rate=None, channels=None):
+        out_path.write_bytes(b"fake-audio")
+
+    packaged = package_segment(
+        "vid1", "https://youtu.be/vid1", segment, tmp_path / "source.wav", output_dir, cfg, slice_fn=fake_slice_fn
+    )
+
+    metadata = json.loads(packaged.json_path.read_text())
+    first, second = metadata["words"]
+    assert first["start"] == pytest.approx(100.0)
+    assert first["clip_start"] == pytest.approx(0.0)
+    assert first["clip_end"] == pytest.approx(0.5)
+    assert second["start"] == pytest.approx(100.5)
+    assert second["clip_start"] == pytest.approx(0.5)
+    assert second["clip_end"] == pytest.approx(2.0)
+
+
 def test_build_and_write_manifest_reflects_disk_state(tmp_path):
     output_dir = tmp_path / "output"
     output_dir.mkdir()

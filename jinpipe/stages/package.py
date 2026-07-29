@@ -112,6 +112,16 @@ def package_segment(
             channels=cfg.channels,
         )
 
+    words = []
+    for w in segment.words:
+        word = asdict(w)
+        # start/end are video-relative (match superchunk/ASR timestamps elsewhere);
+        # clip_start/clip_end are relative to this segment's own sliced audio_path,
+        # which is what a caller aligning words against the packaged clip needs.
+        word["clip_start"] = w.start - segment.start
+        word["clip_end"] = w.end - segment.start
+        words.append(word)
+
     metadata = {
         "segment_id": seg_id,
         "video_id": video_id,
@@ -120,7 +130,7 @@ def package_segment(
         "end": segment.end,
         "duration": segment.end - segment.start,
         "text": segment.text,
-        "words": [asdict(w) for w in segment.words],
+        "words": words,
         "speaker": segment.speaker,
         "language": language,
         "dnsmos_ovr": dnsmos_ovr,
