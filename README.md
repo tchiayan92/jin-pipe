@@ -81,8 +81,8 @@ per-task audio length, which is what makes the cost estimate tractable.
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"                 # core + tests, no heavy ML deps
-pip install -e ".[vad,asr,filter,gpu]"  # add these on the box that actually runs the pipeline
+pip install -e ".[dev]"                         # core + tests, no heavy ML deps
+pip install -e ".[vad,asr,filter,gpu,viewer]"  # add these on the box that actually runs the pipeline
 ```
 
 - `vad`: `silero-vad` (+ CPU torch) - tiny, fine to install anywhere.
@@ -96,6 +96,7 @@ pip install -e ".[vad,asr,filter,gpu]"  # add these on the box that actually run
   `filter.dnsmos_model_path` at it - or set `filter.min_dnsmos_ovr: null` to
   skip DNSMOS scoring entirely and keep just the duration/language gates.
 - `gpu`: `pynvml` for VRAM introspection when a CUDA GPU is present.
+- `viewer`: `gradio` 
 
 ## Configure
 
