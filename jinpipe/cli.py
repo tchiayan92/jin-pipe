@@ -10,7 +10,7 @@ from rich.console import Console
 
 from jinpipe.config import load_config
 
-app = typer.Typer(add_completion=False, help="Async YouTube -> TTS-dataset pipeline")
+app = typer.Typer(add_completion=False, help="Async YouTube/Local audio -> TTS-dataset pipeline")
 console = Console()
 
 ConfigOpt = typer.Option(..., "--config", "-c", help="Path to a YAML config file")
@@ -122,13 +122,15 @@ def reset(
 
 @app.command("manifest")
 def manifest(config: Path = ConfigOpt) -> None:
-    """Rebuild manifest.jsonl in output_dir from the per-segment JSON files on disk."""
-    from jinpipe.stages.package import write_manifest
+    """Rebuild manifest.jsonl and manifest.csv in output_dir from the per-segment JSON files on disk."""
+    from jinpipe.stages.package import write_csv, write_manifest
 
     cfg = load_config(config)
     manifest_path = cfg.paths.output_dir / "manifest.jsonl"
     count = write_manifest(cfg.paths.output_dir, manifest_path)
-    console.print(f"[green]OK[/green] wrote {count} entries to {manifest_path}")
+    csv_path = cfg.paths.output_dir / "manifest.csv"
+    write_csv(cfg.paths.output_dir, csv_path, audio_format=cfg.package.audio_format)
+    console.print(f"[green]OK[/green] wrote {count} entries to {manifest_path} and {csv_path}")
 
 
 @app.command("stats")
@@ -159,7 +161,7 @@ def filter_speakers_cmd(
     status is unaffected; re-run `package`/`run` to regenerate anything
     deleted here.
     """
-    from jinpipe.stages.package import filter_speakers, write_manifest
+    from jinpipe.stages.package import filter_speakers, write_csv, write_manifest
 
     cfg = load_config(config)
     keep_set = set(keep)
@@ -178,6 +180,7 @@ def filter_speakers_cmd(
     result = filter_speakers(cfg.paths.output_dir, keep_set, dry_run=False)
     manifest_path = cfg.paths.output_dir / "manifest.jsonl"
     count = write_manifest(cfg.paths.output_dir, manifest_path)
+    write_csv(cfg.paths.output_dir, cfg.paths.output_dir / "manifest.csv", audio_format=cfg.package.audio_format)
     console.print(f"[green]OK[/green] removed {result['removed']} segment(s); manifest now has {count} entries")
 
 

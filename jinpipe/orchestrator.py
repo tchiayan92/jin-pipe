@@ -134,6 +134,9 @@ async def run_pipeline_async(cfg: JinPipeConfig, *, gpu_ids: list[int] | None = 
             await asyncio.gather(*background_tasks, return_exceptions=True)
 
         package_stage.write_manifest(cfg.paths.output_dir, cfg.paths.output_dir / "manifest.jsonl")
+        package_stage.write_csv(
+            cfg.paths.output_dir, cfg.paths.output_dir / "manifest.csv", audio_format=cfg.package.audio_format
+        )
     finally:
         await asr_pool.stop()
         executor.shutdown(wait=True)

@@ -12,6 +12,7 @@ directory scan + JSON parse, not re-processing audio.
 
 from __future__ import annotations
 
+import csv
 import json
 import subprocess
 from dataclasses import asdict, dataclass
@@ -19,6 +20,8 @@ from pathlib import Path
 
 from jinpipe.config import PackageConfig
 from jinpipe.stages.rechunk import Segment
+
+CSV_FIELDNAMES = ("no", "filename", "text")
 
 
 def segment_id_for(video_id: str, idx: int) -> str:
@@ -155,6 +158,24 @@ def write_manifest(output_dir: Path, manifest_path: Path) -> int:
     lines = [json.dumps(e, ensure_ascii=False) for e in entries]
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write_text(manifest_path, "\n".join(lines) + ("\n" if lines else ""))
+    return len(entries)
+
+
+def write_csv(output_dir: Path, csv_path: Path, *, audio_format: str) -> int:
+    """Rebuild a flat (no, filename, text) CSV from ground truth, same shape as `jinpipe transcribe`'s output."""
+    entries = build_manifest(output_dir)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_FIELDNAMES)
+        writer.writeheader()
+        for i, entry in enumerate(entries, start=1):
+            writer.writerow(
+                {
+                    "no": i,
+                    "filename": f"{entry['segment_id']}.{audio_format}",
+                    "text": entry.get("text", ""),
+                }
+            )
     return len(entries)
 
 

@@ -11,6 +11,7 @@ from jinpipe.stages.package import (
     package_segment,
     segment_id_for,
     slice_segment_audio,
+    write_csv,
     write_manifest,
 )
 from jinpipe.stages.rechunk import Segment, Word
@@ -169,6 +170,33 @@ def test_build_and_write_manifest_reflects_disk_state(tmp_path):
     package_segment("vid1", "https://youtu.be/vid1", seg3, tmp_path / "source.wav", output_dir, cfg, slice_fn=fake_slice_fn)
     count2 = write_manifest(output_dir, manifest_path)
     assert count2 == 4
+
+
+def test_write_csv_reflects_disk_state(tmp_path):
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    cfg = PackageConfig(audio_format="flac")
+
+    def fake_slice_fn(source, out_path, start, end, audio_format, sample_rate=None, channels=None):
+        out_path.write_bytes(b"fake-audio")
+
+    for i in range(2):
+        seg = make_segment(idx=i, start=float(i * 3), end=float(i * 3 + 2))
+        package_segment(
+            "vid1", "https://youtu.be/vid1", seg, tmp_path / "source.wav", output_dir, cfg, slice_fn=fake_slice_fn
+        )
+
+    csv_path = tmp_path / "manifest.csv"
+    count = write_csv(output_dir, csv_path, audio_format="flac")
+    assert count == 2
+
+    import csv as csv_module
+
+    with csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv_module.DictReader(f))
+    assert [r["no"] for r in rows] == ["1", "2"]
+    assert rows[0]["filename"] == "vid1_00000.flac"
+    assert rows[0]["text"] == "Hello world."
 
 
 def _pack(output_dir, cfg, video_id, idx, start, end, speaker):
