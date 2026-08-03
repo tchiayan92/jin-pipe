@@ -204,18 +204,65 @@ def _default_model_loader(cfg: AsrConfig, device: str, gpu_id: int | None) -> Wo
     return WorkerModels(whisper_model=model, device=device, diarize_pipeline=diarize_pipeline)
 
 
+def _whisperx_align_supported(language: str | None) -> bool:
+    """Whether WhisperX ships a wav2vec2 CTC alignment model for this language.
+
+    Coverage is far short of Whisper's own ~99 languages (e.g. no Malay/"ms")
+    - this gates the *optional* alignment refinement, never whether word
+    timestamps exist at all (those always come from faster-whisper directly).
+    """
+    if not language:
+        return False
+    from whisperx.alignment import DEFAULT_ALIGN_MODELS_HF, DEFAULT_ALIGN_MODELS_TORCH
+
+    return language in DEFAULT_ALIGN_MODELS_TORCH or language in DEFAULT_ALIGN_MODELS_HF
+
+
 def _default_transcribe(models: WorkerModels, audio_path: str, cfg: AsrConfig) -> list[dict]:
-    """Transcribe one super-chunk. Returns word dicts with LOCAL (chunk-relative) timestamps."""
+    """Transcribe one super-chunk. Returns word dicts with LOCAL (chunk-relative) timestamps.
+
+    Word-level timestamps always come from faster-whisper's own native
+    word_timestamps=True (Whisper's cross-attention-based alignment, works for
+    any language Whisper supports). This deliberately bypasses WhisperX's
+    batched FasterWhisperPipeline.transcribe() - that method's segment dicts
+    never carry word-level data under any configuration; only
+    whisperx.align() adds a "words" key, and that needs a language-specific
+    wav2vec2 CTC model that doesn't exist for every language. models.whisper_model
+    is that batched pipeline; models.whisper_model.model is the underlying,
+    un-overridden faster_whisper.WhisperModel, whose original transcribe()
+    we call directly here instead.
+    """
     import whisperx
 
     audio = whisperx.load_audio(audio_path)
-    result = models.whisper_model.transcribe(audio, language=cfg.language)
-    language = result.get("language", cfg.language)
+    raw_segments, info = models.whisper_model.model.transcribe(
+        audio, language=cfg.language, word_timestamps=True
+    )
+    language = info.language
+    result = {
+        "language": language,
+        "segments": [
+            {
+                "start": seg.start,
+                "end": seg.end,
+                "text": seg.text,
+                "words": [
+                    {"word": (w.word or "").strip(), "start": w.start, "end": w.end} for w in (seg.words or [])
+                ],
+            }
+            for seg in raw_segments
+        ],
+    }
 
-    if cfg.align:
+    if cfg.align and _whisperx_align_supported(language):
         align_model, metadata = models.get_align_model(language)
         result = whisperx.align(
             result["segments"], align_model, metadata, audio, models.device, return_char_alignments=False
+        )
+    elif cfg.align:
+        logger.info(
+            "no WhisperX alignment model for language %r - using faster-whisper's native word timestamps",
+            language,
         )
 
     overlap_regions: list[tuple[float, float]] = []

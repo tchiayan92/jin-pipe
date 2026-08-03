@@ -89,6 +89,17 @@ pip install -e ".[vad,asr,filter,gpu,viewer]"  # add these on the box that actua
 - `asr`: `whisperx` (+ torch/torchaudio) - heavy; a CUDA GPU is strongly
   recommended for `large-v3`. Diarization additionally needs a Hugging Face
   token with access to `pyannote/speaker-diarization` (`asr.hf_token`).
+  Word-level timestamps (which rechunk/diarization/speaker-split all depend
+  on) always come from faster-whisper's own native `word_timestamps`, which
+  works for every language Whisper supports. `asr.align: true` (default)
+  additionally runs WhisperX's wav2vec2 forced-alignment pass to refine word
+  boundaries, but only for languages it actually has an alignment model for
+  (`whisperx.alignment.DEFAULT_ALIGN_MODELS_TORCH`/`_HF` - notably missing
+  e.g. Malay/`ms` and Tamil/`ta`); for anything else it transparently falls
+  back to faster-whisper's native timestamps, so unsupported languages still
+  work correctly, just without that extra refinement pass. Set `align: false`
+  to skip the refinement pass entirely even for supported languages (e.g. to
+  save time/memory) - either way you always get real word-level timestamps.
 - `filter`: `onnxruntime` + `librosa` for DNSMOS scoring. You must separately
   obtain `sig_bak_ovr.onnx` from the
   [DNS-Challenge repo](https://github.com/microsoft/DNS-Challenge) (its

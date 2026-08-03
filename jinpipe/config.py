@@ -56,6 +56,13 @@ class AsrConfig(BaseModel):
     compute_type: str = "auto"
     num_workers: int = 1
     language: str | None = None
+    # Word-level timestamps always come from faster-whisper's own native
+    # word_timestamps (works for any language Whisper supports). When True,
+    # AND WhisperX has a wav2vec2 alignment model for the detected/configured
+    # language, an additional forced-alignment pass refines those word
+    # boundaries - purely a quality upgrade, applied automatically only when
+    # available. Languages WhisperX has no alignment model for (e.g. Malay/
+    # "ms") transparently keep faster-whisper's native timestamps either way.
     align: bool = True
     diarize: bool = False
     hf_token: str | None = None

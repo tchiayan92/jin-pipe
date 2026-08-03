@@ -44,7 +44,8 @@ asr:
   compute_type: "auto"     # auto resolves to float16 (cuda) / int8 (cpu)
   num_workers: 1            # persistent model-loaded worker processes (<= GPU count, or 1 for CPU-only)
   language: null             # null = auto-detect per video
-  align: true                 # wav2vec2 forced alignment for precise word timestamps
+  align: true                 # MUST stay true - the only source of word-level timestamps; without
+                                 # them rechunk/diarization/speaker-split all silently produce nothing
   diarize: false               # turn on for multi-speaker sources - required for rechunk.split_on_speaker_change
                                  # and filter.reject_overlapping_speech to have any effect; without it every
                                  # word has no speaker label so segments can silently mix speakers (heavy: adds
