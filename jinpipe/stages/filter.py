@@ -4,9 +4,9 @@ DNSMOS needs Microsoft's sig_bak_ovr.onnx model file, which is not bundled
 here - obtain it from the DNS-Challenge repo per its license and point
 `filter.dnsmos_model_path` at it. The scorer is injectable so the filtering
 *logic* (thresholds, duration/language gates) is fully testable without the
-real model; the default feature-extraction implementation follows the
-publicly documented DNSMOS local-scoring approach (mel-spectrogram windows,
-averaged) but should be checked against whichever model revision you use.
+real model; the default feature-extraction implementation feeds the model
+raw 9.01s waveform windows directly (it computes its own features
+internally) and averages its per-window sig/bak/ovr outputs.
 """
 
 from __future__ import annotations
@@ -48,19 +48,13 @@ def _default_dnsmos_scorer(audio_path: Path, model_path: str | None) -> dict:
         audio = np.pad(audio, (0, window_len - len(audio)))
 
     scores = {"sig": [], "bak": [], "ovr": []}
-    input_meta = session.get_inputs()[0]
-    input_name = input_meta.name
-    # Model builds vary: some declare input_1 with a leading batch axis
-    # (rank 3), some don't (rank 2). Match whatever this model expects
-    # instead of assuming one convention.
-    expects_batch_axis = len(input_meta.shape) == 3
+    input_name = session.get_inputs()[0].name
+    # sig_bak_ovr.onnx takes the raw waveform directly (shape (1, window_len)
+    # samples) and computes its own features internally - it is not fed a
+    # mel-spectrogram.
     for start in range(0, max(1, len(audio) - window_len + 1), hop_len):
-        segment = audio[start : start + window_len]
-        mel = librosa.feature.melspectrogram(y=segment, sr=sr, n_fft=512, hop_length=int(sr / 100), n_mels=120)
-        log_mel = (librosa.power_to_db(mel, ref=np.max) + 40) / 40
-        features = log_mel.T.astype(np.float32)
-        if expects_batch_axis:
-            features = features[np.newaxis, ...]
+        segment = audio[start : start + window_len].astype(np.float32)
+        features = segment[np.newaxis, :]
         raw = np.asarray(session.run(None, {input_name: features})[0]).reshape(-1)
         scores["sig"].append(float(raw[0]))
         scores["bak"].append(float(raw[1]))
