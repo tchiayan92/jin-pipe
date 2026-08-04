@@ -48,13 +48,20 @@ def _default_dnsmos_scorer(audio_path: Path, model_path: str | None) -> dict:
         audio = np.pad(audio, (0, window_len - len(audio)))
 
     scores = {"sig": [], "bak": [], "ovr": []}
-    input_name = session.get_inputs()[0].name
+    input_meta = session.get_inputs()[0]
+    input_name = input_meta.name
+    # Model builds vary: some declare input_1 with a leading batch axis
+    # (rank 3), some don't (rank 2). Match whatever this model expects
+    # instead of assuming one convention.
+    expects_batch_axis = len(input_meta.shape) == 3
     for start in range(0, max(1, len(audio) - window_len + 1), hop_len):
         segment = audio[start : start + window_len]
         mel = librosa.feature.melspectrogram(y=segment, sr=sr, n_fft=512, hop_length=int(sr / 100), n_mels=120)
         log_mel = (librosa.power_to_db(mel, ref=np.max) + 40) / 40
-        features = log_mel.T.astype(np.float32)[np.newaxis, ...]
-        raw = session.run(None, {input_name: features})[0][0]
+        features = log_mel.T.astype(np.float32)
+        if expects_batch_axis:
+            features = features[np.newaxis, ...]
+        raw = np.asarray(session.run(None, {input_name: features})[0]).reshape(-1)
         scores["sig"].append(float(raw[0]))
         scores["bak"].append(float(raw[1]))
         scores["ovr"].append(float(raw[2]))
