@@ -33,6 +33,10 @@ asr = [
 filter = [
     "onnxruntime>=1.17",
     "librosa>=0.10",
+    # numba (a librosa dep) doesn't declare numpy<2.5 compat yet; without this
+    # cap, uv's resolver backtracks numba all the way to 0.53.1, whose
+    # llvmlite pin doesn't build on Python >=3.10.
+    "numpy<2.5",
 ]
 # NVIDIA VRAM introspection (only relevant with a CUDA GPU present).
 gpu = [
