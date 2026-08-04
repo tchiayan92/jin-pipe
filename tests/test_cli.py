@@ -221,7 +221,7 @@ def test_transcribe_writes_csv_from_input_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "jinpipe.stages.transcribe_only.transcribe_folder",
         lambda input_dir, asr_cfg, device: [
-            {"no": i, "filename": p.name, "text": _fake_transcribe(None, p, asr_cfg)}
+            {"no": i, "filename": p.name, "duration_s": 1.5, "text": _fake_transcribe(None, p, asr_cfg)}
             for i, p in enumerate(sorted(input_dir.iterdir()), start=1)
         ],
     )
@@ -233,9 +233,9 @@ def test_transcribe_writes_csv_from_input_dir(tmp_path, monkeypatch):
     output_path = tmp_path / "output" / "transcriptions.csv"
     assert output_path.exists()
     lines = output_path.read_text().strip().splitlines()
-    assert lines[0] == "no,filename,text"
-    assert lines[1] == "1,a.wav,transcript of a.wav"
-    assert lines[2] == "2,b.wav,transcript of b.wav"
+    assert lines[0] == "no,filename,duration_s,text"
+    assert lines[1] == "1,a.wav,1.5,transcript of a.wav"
+    assert lines[2] == "2,b.wav,1.5,transcript of b.wav"
 
 
 def test_transcribe_respects_custom_output_path(tmp_path, monkeypatch):
@@ -248,7 +248,7 @@ def test_transcribe_respects_custom_output_path(tmp_path, monkeypatch):
     monkeypatch.setattr("jinpipe.orchestrator.detect_gpu_ids", lambda: [])
     monkeypatch.setattr(
         "jinpipe.stages.transcribe_only.transcribe_folder",
-        lambda input_dir, asr_cfg, device: [{"no": 1, "filename": "a.wav", "text": "hi"}],
+        lambda input_dir, asr_cfg, device: [{"no": 1, "filename": "a.wav", "duration_s": 1.5, "text": "hi"}],
     )
 
     result = runner.invoke(

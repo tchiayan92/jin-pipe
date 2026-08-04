@@ -20,7 +20,7 @@ from pathlib import Path
 from jinpipe.config import AsrConfig
 from jinpipe.stages.local import AUDIO_EXTENSIONS, scan_local_audio
 
-CSV_FIELDNAMES = ("no", "filename", "text")
+CSV_FIELDNAMES = ("no", "filename", "duration_s", "text")
 
 
 def load_model(cfg: AsrConfig, device: str):
@@ -32,12 +32,14 @@ def load_model(cfg: AsrConfig, device: str):
     return whisperx.load_model(cfg.model_size, device, compute_type=compute_type, language=cfg.language)
 
 
-def transcribe_file(model, audio_path: Path, cfg: AsrConfig) -> str:
+def transcribe_file(model, audio_path: Path, cfg: AsrConfig) -> dict:
     import whisperx
+    from whisperx.audio import SAMPLE_RATE
 
     audio = whisperx.load_audio(str(audio_path))
     result = model.transcribe(audio, language=cfg.language)
-    return " ".join(seg["text"].strip() for seg in result["segments"]).strip()
+    text = " ".join(seg["text"].strip() for seg in result["segments"]).strip()
+    return {"text": text, "duration_s": len(audio) / SAMPLE_RATE}
 
 
 def transcribe_folder(
@@ -48,14 +50,24 @@ def transcribe_folder(
     model=None,
     transcribe_fn=transcribe_file,
 ) -> list[dict]:
-    """Transcribe every audio file directly inside input_dir. Returns rows: {no, filename, text}."""
+    """Transcribe every audio file directly inside input_dir.
+
+    Returns rows: {no, filename, duration_s, text}.
+    """
     files = scan_local_audio(input_dir, AUDIO_EXTENSIONS)
     if model is None:
         model = load_model(cfg, device)
     rows = []
     for i, path in enumerate(files, start=1):
-        text = transcribe_fn(model, path, cfg)
-        rows.append({"no": i, "filename": path.name, "text": text})
+        result = transcribe_fn(model, path, cfg)
+        rows.append(
+            {
+                "no": i,
+                "filename": path.name,
+                "duration_s": round(result["duration_s"], 3),
+                "text": result["text"],
+            }
+        )
     return rows
 
 
