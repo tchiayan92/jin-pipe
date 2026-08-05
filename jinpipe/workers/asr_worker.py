@@ -39,6 +39,10 @@ class AsrTask:
     superchunk_idx: int
     audio_path: str
     superchunk_start_s: float
+    kind: str = "asr"  # "asr" | "diarize"
+    # GLOBAL (whole-video) time, set for "asr" tasks once a video's one-time
+    # diarize task has completed; None when diarization is disabled or failed.
+    diarize_turns: list[dict] | None = None
 
 
 @dataclass
@@ -48,6 +52,8 @@ class AsrResult:
     superchunk_idx: int
     words: list[dict] | None
     error: str | None
+    language: str | None = None  # set on "asr" results
+    turns: list[dict] | None = None  # set on "diarize" results, GLOBAL time
 
 
 @dataclass
@@ -101,6 +107,33 @@ def compute_overlap_regions(turns: list[dict]) -> list[tuple[float, float]]:
 
 def word_in_overlap(start: float, end: float, regions: list[tuple[float, float]]) -> bool:
     return any(min(end, r_end) - max(start, r_start) > 0 for r_start, r_end in regions)
+
+
+def assign_speakers(words: list[dict], turns: list[dict], *, fill_nearest: bool = False) -> None:
+    """Set each word's ``speaker`` in place by max time-overlap against turns.
+
+    ``words`` and ``turns`` must already share the same time base (both GLOBAL/
+    whole-video here, since diarization now runs once per video rather than
+    per super-chunk). A word with zero overlap against every turn (e.g. it
+    falls in a silence gap between two diarization turns) is left with
+    ``speaker=None`` unless ``fill_nearest`` is set, mirroring whisperx's own
+    ``assign_word_speakers(..., fill_nearest=False)`` default.
+    """
+    if not turns:
+        return
+    for w in words:
+        best_speaker = None
+        best_overlap = 0.0
+        for t in turns:
+            overlap = min(w["end"], t["end"]) - max(w["start"], t["start"])
+            if overlap > best_overlap:
+                best_overlap, best_speaker = overlap, t["speaker"]
+        if best_speaker is not None:
+            w["speaker"] = best_speaker
+        elif fill_nearest:
+            mid = (w["start"] + w["end"]) / 2
+            nearest = min(turns, key=lambda t: abs((t["start"] + t["end"]) / 2 - mid))
+            w["speaker"] = nearest["speaker"]
 
 
 def resolve_compute_type(cfg: AsrConfig, device: str) -> str:
@@ -204,6 +237,23 @@ def _default_model_loader(cfg: AsrConfig, device: str, gpu_id: int | None) -> Wo
     return WorkerModels(whisper_model=model, device=device, diarize_pipeline=diarize_pipeline)
 
 
+def _default_diarize(models: WorkerModels, audio_path: str) -> list[dict]:
+    """Diarize the WHOLE standardized video wav once (audio_path is std_path,
+    never a super-chunk slice), so the returned turns are in GLOBAL
+    (video-relative) time and identify the same speaker consistently across
+    every super-chunk of this video - unlike a per-super-chunk diarization
+    call, where pyannote's SPEAKER_00/SPEAKER_01 labels are only stable within
+    that one call.
+    """
+    import whisperx
+
+    if models.diarize_pipeline is None:
+        raise RuntimeError("diarize task submitted but this worker has no diarize_pipeline loaded")
+    audio = whisperx.load_audio(audio_path)
+    diarize_segments = models.diarize_pipeline(audio)
+    return diarize_segments[["start", "end", "speaker"]].to_dict("records")
+
+
 def _whisperx_align_supported(language: str | None) -> bool:
     """Whether WhisperX ships a wav2vec2 CTC alignment model for this language.
 
@@ -218,8 +268,13 @@ def _whisperx_align_supported(language: str | None) -> bool:
     return language in DEFAULT_ALIGN_MODELS_TORCH or language in DEFAULT_ALIGN_MODELS_HF
 
 
-def _default_transcribe(models: WorkerModels, audio_path: str, cfg: AsrConfig) -> list[dict]:
-    """Transcribe one super-chunk. Returns word dicts with LOCAL (chunk-relative) timestamps.
+def _default_transcribe(models: WorkerModels, audio_path: str, cfg: AsrConfig) -> tuple[list[dict], str | None]:
+    """Transcribe one super-chunk. Returns (word dicts, detected language).
+
+    Word dicts carry LOCAL (chunk-relative) timestamps and no speaker/overlap
+    keys yet - those are filled in by the caller (_worker_main) once words
+    have been shifted to GLOBAL time, using that video's one-time diarization
+    turns (also GLOBAL time - see _default_diarize).
 
     Word-level timestamps always come from faster-whisper's own native
     word_timestamps=True (Whisper's cross-attention-based alignment, works for
@@ -265,34 +320,19 @@ def _default_transcribe(models: WorkerModels, audio_path: str, cfg: AsrConfig) -
             language,
         )
 
-    overlap_regions: list[tuple[float, float]] = []
-    if models.diarize_pipeline is not None:
-        from whisperx.diarize import assign_word_speakers
-
-        diarize_segments = models.diarize_pipeline(audio)
-        turns = diarize_segments[["start", "end", "speaker"]].to_dict("records")
-        overlap_regions = compute_overlap_regions(turns)
-        result = assign_word_speakers(diarize_segments, result)
-
     words = []
     for seg in result["segments"]:
         for w in seg.get("words", []):
             if "start" not in w or "end" not in w:
                 # WhisperX occasionally drops timing for unaligned punctuation-only tokens.
                 continue
-            words.append(
-                {
-                    "word": (w.get("word") or "").strip(),
-                    "start": w["start"],
-                    "end": w["end"],
-                    "speaker": w.get("speaker"),
-                    "overlap": word_in_overlap(w["start"], w["end"], overlap_regions),
-                }
-            )
-    return words
+            words.append({"word": (w.get("word") or "").strip(), "start": w["start"], "end": w["end"]})
+    return words, language
 
 
-def _worker_main(task_queue, result_queue, heartbeat_queue, worker_id, device, gpu_id, model_loader, transcribe_fn, cfg):
+def _worker_main(
+    task_queue, result_queue, heartbeat_queue, worker_id, device, gpu_id, model_loader, transcribe_fn, diarize_fn, cfg
+):
     models = model_loader(cfg, device, gpu_id)
     while True:
         task = task_queue.get()
@@ -300,12 +340,31 @@ def _worker_main(task_queue, result_queue, heartbeat_queue, worker_id, device, g
             break
         heartbeat_queue.put((worker_id, task.task_id, "start", time.monotonic()))
         try:
-            local_words = transcribe_fn(models, task.audio_path, cfg)
-            global_words = [
-                {**w, "start": w["start"] + task.superchunk_start_s, "end": w["end"] + task.superchunk_start_s}
-                for w in local_words
-            ]
-            result_queue.put(AsrResult(task.task_id, task.video_id, task.superchunk_idx, global_words, None))
+            if task.kind == "diarize":
+                turns = diarize_fn(models, task.audio_path)
+                result_queue.put(
+                    AsrResult(task.task_id, task.video_id, task.superchunk_idx, None, None, turns=turns)
+                )
+            else:
+                local_words, language = transcribe_fn(models, task.audio_path, cfg)
+                global_words = [
+                    {
+                        **w,
+                        "start": w["start"] + task.superchunk_start_s,
+                        "end": w["end"] + task.superchunk_start_s,
+                        "speaker": None,
+                        "overlap": False,
+                    }
+                    for w in local_words
+                ]
+                if task.diarize_turns:
+                    assign_speakers(global_words, task.diarize_turns, fill_nearest=cfg.diarize_fill_nearest)
+                    overlap_regions = compute_overlap_regions(task.diarize_turns)
+                    for w in global_words:
+                        w["overlap"] = word_in_overlap(w["start"], w["end"], overlap_regions)
+                result_queue.put(
+                    AsrResult(task.task_id, task.video_id, task.superchunk_idx, global_words, None, language=language)
+                )
         except Exception as exc:  # noqa: BLE001 - reported to the pool, never fatal to the worker loop
             result_queue.put(AsrResult(task.task_id, task.video_id, task.superchunk_idx, None, str(exc)))
         heartbeat_queue.put((worker_id, task.task_id, "end", time.monotonic()))
@@ -319,7 +378,9 @@ class AsrWorkerPool:
         *,
         model_loader=_default_model_loader,
         transcribe_fn=_default_transcribe,
+        diarize_fn=_default_diarize,
         stall_timeout_s: float = 300.0,
+        diarize_stall_timeout_s: float = 1800.0,
         heartbeat_poll_s: float = 1.0,
         mp_context: str = "spawn",
     ) -> None:
@@ -327,7 +388,14 @@ class AsrWorkerPool:
         self.worker_specs = {spec["worker_id"]: spec for spec in worker_specs}
         self.model_loader = model_loader
         self.transcribe_fn = transcribe_fn
+        self.diarize_fn = diarize_fn
         self.stall_timeout_s = stall_timeout_s
+        # A whole-video diarize call can legitimately run much longer than any
+        # single super-chunk ASR call, but heartbeats only pulse at task
+        # start/end (no progress pulses in between) - so it needs its own,
+        # much longer stall allowance to avoid the supervisor killing a
+        # healthy worker mid-diarization.
+        self.diarize_stall_timeout_s = diarize_stall_timeout_s
         self.heartbeat_poll_s = heartbeat_poll_s
 
         self._ctx = mp.get_context(mp_context)
@@ -388,6 +456,7 @@ class AsrWorkerPool:
                 spec["gpu_id"],
                 self.model_loader,
                 self.transcribe_fn,
+                self.diarize_fn,
                 self.cfg,
             ),
             daemon=True,
@@ -444,10 +513,16 @@ class AsrWorkerPool:
         if proc is None:
             return
         crashed = not proc.is_alive()
+        in_flight_id = self._in_flight.get(worker_id)
+        timeout = self.stall_timeout_s
+        if in_flight_id is not None:
+            in_flight_task = self._pending_tasks.get(in_flight_id)
+            if in_flight_task is not None and in_flight_task.kind == "diarize":
+                timeout = self.diarize_stall_timeout_s
         stalled = (
             not crashed
-            and self._in_flight.get(worker_id) is not None
-            and (time.monotonic() - self._last_heartbeat[worker_id]) > self.stall_timeout_s
+            and in_flight_id is not None
+            and (time.monotonic() - self._last_heartbeat[worker_id]) > timeout
         )
         if not crashed and not stalled:
             return
@@ -474,11 +549,31 @@ def _resolve_future(fut: asyncio.Future, result: AsrResult) -> None:
         fut.set_result(result)
 
 
-def make_task(video_id: str, superchunk_idx: int, audio_path: str, superchunk_start_s: float) -> AsrTask:
+def make_task(
+    video_id: str,
+    superchunk_idx: int,
+    audio_path: str,
+    superchunk_start_s: float,
+    *,
+    diarize_turns: list[dict] | None = None,
+) -> AsrTask:
     return AsrTask(
         task_id=str(uuid.uuid4()),
         video_id=video_id,
         superchunk_idx=superchunk_idx,
         audio_path=audio_path,
         superchunk_start_s=superchunk_start_s,
+        kind="asr",
+        diarize_turns=diarize_turns,
+    )
+
+
+def make_diarize_task(video_id: str, audio_path: str) -> AsrTask:
+    return AsrTask(
+        task_id=str(uuid.uuid4()),
+        video_id=video_id,
+        superchunk_idx=-1,
+        audio_path=audio_path,
+        superchunk_start_s=0.0,
+        kind="diarize",
     )

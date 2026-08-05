@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from pathlib import Path
@@ -38,7 +39,7 @@ from jinpipe.stages.discover import DiscoverError, DiscoveredVideo, discover_sou
 from jinpipe.stages.download import DownloadError, download_all
 from jinpipe.stages.local import local_results, pending_and_fresh_local_files
 from jinpipe.stages.rechunk import Segment, SuperchunkWords, Word, rechunk_video
-from jinpipe.workers.asr_worker import AsrWorkerPool, build_worker_specs, make_task
+from jinpipe.workers.asr_worker import AsrWorkerPool, build_worker_specs, make_diarize_task, make_task
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +144,39 @@ async def run_pipeline_async(cfg: JinPipeConfig, *, gpu_ids: list[int] | None = 
         store.close()
 
 
+async def _maybe_diarize_video(
+    video_id: str,
+    std_path: Path,
+    cfg: JinPipeConfig,
+    gate: ResourceGate,
+    asr_pool: AsrWorkerPool,
+) -> list[dict] | None:
+    """Diarize the WHOLE standardized video once, so speaker labels are
+    consistent across every super-chunk (unlike diarizing each super-chunk's
+    sliced audio in isolation, where pyannote's SPEAKER_00/SPEAKER_01 labels
+    have no identity continuity across calls). Returns None (proceed without
+    speaker labels) if diarization is disabled or the task itself fails -
+    never fails the whole video over a missing speaker label.
+    """
+    if not cfg.asr.diarize:
+        return None
+    # Flat per-call cost (duration_s pinned to 1.0), not scaled by video
+    # length - see config.py's "diarize_video" cost comment.
+    reservation = await gate.acquire("diarize_video", 1.0)
+    try:
+        result = await asr_pool.submit(make_diarize_task(video_id, str(std_path)))
+    finally:
+        reservation.release()
+    if result.error is not None:
+        logger.warning(
+            "video-level diarization failed for %s: %s - proceeding without speaker labels",
+            video_id,
+            result.error,
+        )
+        return None
+    return result.turns
+
+
 async def _process_video_to_superchunks(
     video_id: str,
     raw_path: Path,
@@ -157,6 +191,7 @@ async def _process_video_to_superchunks(
 ) -> None:
     std_path = std_dir / f"{video_id}.wav"
     duration = duration_s or 0.0
+    turns: list[dict] | None = None
     try:
         reservation = await gate.acquire("standardize", duration)
         try:
@@ -167,13 +202,29 @@ async def _process_video_to_superchunks(
         finally:
             reservation.release()
 
-        reservation = await gate.acquire("vad", duration)
-        try:
-            superchunks = await loop.run_in_executor(
-                executor, partial(vad_stage.coarse_segment, std_path, cfg.vad, duration)
-            )
-        finally:
-            reservation.release()
+        # Probe the STANDARDIZED file's real duration rather than trusting the
+        # raw pre-standardization container's (possibly undercounted) probed
+        # duration - VAD/ASR run against std_path, so its own true length is
+        # what must gate the last super-chunk's end. Never clamp to an
+        # unknown/zero duration (that would delete almost the whole last
+        # super-chunk) - fall back to "no clamp" instead.
+        probed = await loop.run_in_executor(executor, partial(standardize_stage.probe_duration, std_path))
+        vad_duration = probed if probed is not None else (duration if duration > 0 else float("inf"))
+
+        async def _run_vad() -> list[tuple[int, float, float]]:
+            reservation = await gate.acquire("vad", vad_duration if vad_duration != float("inf") else 0.0)
+            try:
+                return await loop.run_in_executor(
+                    executor, partial(vad_stage.coarse_segment, std_path, cfg.vad, vad_duration)
+                )
+            finally:
+                reservation.release()
+
+        # VAD and video-level diarization both only need std_path and are
+        # independent of each other - run concurrently instead of serially.
+        superchunks, turns = await asyncio.gather(
+            _run_vad(), _maybe_diarize_video(video_id, std_path, cfg, gate, asr_pool)
+        )
 
         for idx, start, end in superchunks:
             store.add_superchunk(video_id, idx, start, end)
@@ -185,7 +236,9 @@ async def _process_video_to_superchunks(
 
     asr_tasks = [
         asyncio.create_task(
-            _process_superchunk_asr(video_id, idx, start, end, std_path, cfg, store, gate, asr_pool, executor, loop)
+            _process_superchunk_asr(
+                video_id, idx, start, end, std_path, cfg, store, gate, asr_pool, executor, loop, turns
+            )
         )
         for idx, start, end in superchunks
     ]
@@ -205,19 +258,21 @@ async def _process_superchunk_asr(
     asr_pool: AsrWorkerPool,
     executor: ProcessPoolExecutor,
     loop: asyncio.AbstractEventLoop,
+    diarize_turns: list[dict] | None = None,
 ) -> None:
     duration = end - start
-    stage_name = "diarize" if cfg.asr.diarize else "asr"
+    # Diarization inference no longer happens per super-chunk (see
+    # _maybe_diarize_video) - this stage is always plain ASR now.
     store.update_superchunk(video_id, idx, status="RUNNING")
     chunk_path = std_path.parent / f"{video_id}_{idx:05d}.superchunk.wav"
 
-    reservation = await gate.acquire(stage_name, duration)
+    reservation = await gate.acquire("asr", duration)
     try:
         try:
             await loop.run_in_executor(
                 executor, partial(package_stage.slice_segment_audio, std_path, chunk_path, start, end, "wav")
             )
-            task = make_task(video_id, idx, str(chunk_path), start)
+            task = make_task(video_id, idx, str(chunk_path), start, diarize_turns=diarize_turns)
             result = await asr_pool.submit(task)
         except Exception as exc:  # noqa: BLE001 - reported to the job store, never fatal to the run
             store.update_superchunk(video_id, idx, status="FAILED", error=str(exc))
@@ -229,10 +284,20 @@ async def _process_superchunk_asr(
     if result.error is not None:
         store.update_superchunk(video_id, idx, status="FAILED", error=result.error)
         return
-    store.update_superchunk(video_id, idx, status="DONE", words_json=json.dumps(result.words))
+    store.update_superchunk(
+        video_id,
+        idx,
+        status="DONE",
+        words_json=json.dumps({"words": result.words, "language": result.language}),
+    )
 
     if store.superchunks_all_done(video_id):
         await _rechunk_and_finalize(video_id, cfg, store, executor, loop, gate)
+
+
+def _pick_video_language(languages: list[str | None]) -> str | None:
+    counts = Counter(lang for lang in languages if lang)
+    return counts.most_common(1)[0][0] if counts else None
 
 
 async def _rechunk_and_finalize(
@@ -243,24 +308,33 @@ async def _rechunk_and_finalize(
     loop: asyncio.AbstractEventLoop,
     gate: ResourceGate,
 ) -> None:
-    superchunks = [
-        SuperchunkWords(
-            idx=row["idx"],
-            start=row["start_s"],
-            end=row["end_s"],
-            words=[
-                Word(
-                    text=w["word"],
-                    start=w["start"],
-                    end=w["end"],
-                    speaker=w.get("speaker"),
-                    overlap=w.get("overlap", False),
-                )
-                for w in json.loads(row["words_json"] or "[]")
-            ],
+    superchunks = []
+    languages: list[str | None] = []
+    for row in store.get_superchunks(video_id):
+        payload = json.loads(row["words_json"] or "[]")
+        if isinstance(payload, list):  # defensive: pre-upgrade bare-list rows, if any survive
+            words_payload, language = payload, None
+        else:
+            words_payload, language = payload.get("words", []), payload.get("language")
+        languages.append(language)
+        superchunks.append(
+            SuperchunkWords(
+                idx=row["idx"],
+                start=row["start_s"],
+                end=row["end_s"],
+                words=[
+                    Word(
+                        text=w["word"],
+                        start=w["start"],
+                        end=w["end"],
+                        speaker=w.get("speaker"),
+                        overlap=w.get("overlap", False),
+                    )
+                    for w in words_payload
+                ],
+            )
         )
-        for row in store.get_superchunks(video_id)
-    ]
+    video_language = _pick_video_language(languages)
     segments: list[Segment] = rechunk_video(superchunks, cfg.rechunk)
     video = store.get_video(video_id)
 
@@ -279,7 +353,7 @@ async def _rechunk_and_finalize(
         )
 
     finalize_tasks = [
-        asyncio.create_task(_finalize_segment(video_id, seg, video, cfg, store, executor, loop, gate))
+        asyncio.create_task(_finalize_segment(video_id, seg, video, cfg, store, executor, loop, gate, video_language))
         for seg in segments
     ]
     if finalize_tasks:
@@ -295,6 +369,7 @@ async def _finalize_segment(
     executor: ProcessPoolExecutor,
     loop: asyncio.AbstractEventLoop,
     gate: ResourceGate,
+    video_language: str | None = None,
 ) -> None:
     seg_id = package_stage.segment_id_for(video_id, seg.idx)
     store.update_segment(video_id, seg.idx, status="RUNNING")
@@ -320,13 +395,15 @@ async def _finalize_segment(
                 channels=cfg.package.channels,
             ),
         )
-        # NOTE: language isn't yet threaded from WhisperX's per-super-chunk
-        # detection through to here, so filter.allowed_languages is inert
-        # until that's wired up.
         filter_result = await loop.run_in_executor(
             executor,
             partial(
-                filter_stage.filter_segment, audio_path, duration, cfg.filter, language=None, has_overlap=seg.has_overlap
+                filter_stage.filter_segment,
+                audio_path,
+                duration,
+                cfg.filter,
+                language=video_language,
+                has_overlap=seg.has_overlap,
             ),
         )
     except Exception as exc:  # noqa: BLE001 - reported to the job store, never fatal to the run
@@ -351,7 +428,7 @@ async def _finalize_segment(
             cfg.paths.output_dir,
             cfg.package,
             dnsmos_ovr=filter_result.dnsmos_ovr,
-            language=None,
+            language=video_language,
         ),
     )
     store.update_segment(

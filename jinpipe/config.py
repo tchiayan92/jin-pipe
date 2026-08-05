@@ -65,6 +65,10 @@ class AsrConfig(BaseModel):
     # "ms") transparently keep faster-whisper's native timestamps either way.
     align: bool = True
     diarize: bool = False
+    # whisperx.diarize.assign_word_speakers's own fill_nearest kwarg defaults to
+    # False (a word with zero time-overlap against any diarization turn stays
+    # speaker=None rather than guessing) - keep that as the default here too.
+    diarize_fill_nearest: bool = False
     hf_token: str | None = None
 
 
@@ -109,7 +113,13 @@ class ResourceConfig(BaseModel):
             "standardize": 2_000_000.0,
             "vad": 3_000_000.0,
             "asr": 60_000_000.0,
-            "diarize": 80_000_000.0,
+            # Flat per-call cost, not scaled by duration: diarization now runs
+            # once per video (see orchestrator._maybe_diarize_video), which
+            # always calls gate.acquire("diarize_video", 1.0) so this value IS
+            # the whole reservation regardless of video length. pyannote's peak
+            # memory is dominated by fixed model weights + bounded internal
+            # batching, not linearly by audio length.
+            "diarize_video": 8_000_000_000.0,
             "filter": 1_000_000.0,
         }
     )

@@ -11,6 +11,7 @@ run for real, which is the part most likely to have wiring bugs.
 from __future__ import annotations
 
 import asyncio
+import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -26,17 +27,31 @@ from jinpipe.workers.asr_worker import AsrResult
 
 
 class FakeAsrPool:
-    def __init__(self, words_by_idx):
+    def __init__(self, words_by_idx, language="en"):
         self.words_by_idx = words_by_idx
+        self.language = language
 
     async def submit(self, task):
-        return AsrResult(task.task_id, task.video_id, task.superchunk_idx, self.words_by_idx[task.superchunk_idx], None)
+        if task.kind == "diarize":
+            return AsrResult(task.task_id, task.video_id, task.superchunk_idx, None, None, turns=[])
+        return AsrResult(
+            task.task_id,
+            task.video_id,
+            task.superchunk_idx,
+            self.words_by_idx[task.superchunk_idx],
+            None,
+            language=self.language,
+        )
 
 
 def _fake_standardize_audio(raw_path, out_path, sample_rate):
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_bytes(b"fake-wav")
     return out_path
+
+
+def _fake_probe_duration(path):
+    return 10.0
 
 
 def _fake_coarse_segment(std_path, cfg, duration_s):
@@ -55,6 +70,7 @@ def _fake_filter_segment(audio_path, duration_s, cfg, language=None, has_overlap
 
 async def test_process_video_to_superchunks_end_to_end(tmp_path, monkeypatch):
     monkeypatch.setattr(standardize_stage, "standardize_audio", _fake_standardize_audio)
+    monkeypatch.setattr(standardize_stage, "probe_duration", _fake_probe_duration)
     monkeypatch.setattr(vad_stage, "coarse_segment", _fake_coarse_segment)
     monkeypatch.setattr(package_stage, "slice_segment_audio", _fake_slice_segment_audio)
     monkeypatch.setattr(filter_stage, "filter_segment", _fake_filter_segment)
@@ -119,6 +135,8 @@ async def test_process_video_to_superchunks_end_to_end(tmp_path, monkeypatch):
     for seg in segments:
         assert Path(seg["output_audio_path"]).exists()
         assert Path(seg["output_json_path"]).exists()
+        packaged = json.loads(Path(seg["output_json_path"]).read_text())
+        assert packaged["language"] == "en"
 
     manifest_path = cfg.paths.output_dir / "manifest.jsonl"
     count = package_stage.write_manifest(cfg.paths.output_dir, manifest_path)
